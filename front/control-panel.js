@@ -12,6 +12,8 @@ const state = {
     selectedCredentials: new Set(),
     quotaCredentials: [],
     quotaCache: new Map(),
+    quotaRequests: new Map(),
+    quotaObserver: null,
     oauthProjectId: '',
     logSocket: null,
     logPaused: false,
@@ -297,7 +299,16 @@ function cooldownInfo(cooldowns) {
     return [`${active.length} 个模型`, active.map(([name]) => name).slice(0, 2).join(' · ')];
 }
 
+function inlineQuotaPlaceholder(filename) {
+    return `<div class="inline-quota is-loading" data-inline-quota="${escapeHtml(filename)}" role="button" tabindex="0" title="点击查看完整额度">
+        <div class="inline-quota-row"><span>Gemini</span><i><b></b></i><strong>—</strong><small>读取中</small></div>
+        <div class="inline-quota-row"><span>Claude</span><i><b></b></i><strong>—</strong><small>读取中</small></div>
+    </div>`;
+}
+
 function renderCredentials() {
+    state.quotaObserver?.disconnect();
+    state.quotaObserver = null;
     const response = state.credentialResponse;
     if (!response) return;
     const query = $('#credentialSearch').value.trim().toLowerCase();
@@ -320,18 +331,22 @@ function renderCredentials() {
             const capability = state.credentialMode === 'geminicli'
                 ? `<span class="badge ${item.preview ? 'violet' : ''}">${item.preview ? 'Preview' : 'Stable'}</span>`
                 : `<span class="badge ${item.enable_credit ? 'amber' : ''}">${item.enable_credit ? 'Credit' : 'Quota'}</span>`;
-            return `<div class="table-row" data-filename="${escapeHtml(item.filename)}">
+            const antigravity = state.credentialMode === 'antigravity';
+            return `<div class="table-row ${antigravity ? 'antigravity-row' : ''}" data-filename="${escapeHtml(item.filename)}">
                 <input class="check credential-check" type="checkbox" aria-label="选择 ${escapeHtml(item.filename)}" ${state.selectedCredentials.has(item.filename) ? 'checked' : ''}>
                 <div class="identity"><b>${escapeHtml(item.user_email || '邮箱未获取')}</b><small>${escapeHtml(item.filename)}</small></div>
                 <span class="badge ${item.disabled ? 'bad' : 'good'}">${item.disabled ? 'Disabled' : 'Enabled'}</span>
                 <div class="cell-stack"><span class="badge">${escapeHtml(item.tier || 'pro')}</span>${capability}</div>
+                ${antigravity ? inlineQuotaPlaceholder(item.filename) : ''}
                 <div class="cell-stack"><span>${errors.length ? `<span class="badge bad">HTTP ${escapeHtml(errors.join('/'))}</span>` : cooldown}</span><small>${escapeHtml(cooldownNote)}</small></div>
                 <div class="cell-stack"><span>${formatTime(item.last_success)}</span><small>最近成功</small></div>
                 <div class="row-menu"><button data-menu="${escapeHtml(item.filename)}" aria-label="凭证操作">${icon('more')}</button></div>
             </div>`;
         }).join('');
-        $('#credentialTable').innerHTML = `<div class="table-row header"><input id="selectPage" class="check" type="checkbox" aria-label="选择本页"><span>账号</span><span>状态</span><span>等级 / 能力</span><span>错误 / 冷却</span><span>最近成功</span><span></span></div>${rows}`;
+        const antigravity = state.credentialMode === 'antigravity';
+        $('#credentialTable').innerHTML = `<div class="table-row header ${antigravity ? 'antigravity-row' : ''}"><input id="selectPage" class="check" type="checkbox" aria-label="选择本页"><span>账号</span><span>状态</span><span>等级 / 能力</span>${antigravity ? '<span>模型额度</span>' : ''}<span>错误 / 冷却</span><span>最近成功</span><span></span></div>${rows}`;
         $('#selectPage').checked = items.length > 0 && items.every((item) => state.selectedCredentials.has(item.filename));
+        if (antigravity) observeInlineQuotas();
     }
     const first = response.total ? response.offset + 1 : 0;
     const last = Math.min(response.offset + response.limit, response.total);
@@ -505,6 +520,103 @@ function quotaGroup(modelName) {
     return 'Other';
 }
 
+function summarizeQuotaPool(models, pool) {
+    const entries = Object.entries(models || {}).filter(([name]) => {
+        const isClaude = name.toLowerCase().includes('claude');
+        return pool === 'Claude' ? isClaude : !isClaude;
+    });
+    if (!entries.length) return null;
+    let remaining = 1;
+    let resetTime = '—';
+    let resetRaw = '';
+    let resetMs = Number.POSITIVE_INFINITY;
+    for (const [, quota] of entries) {
+        remaining = Math.min(remaining, Math.max(0, Math.min(1, Number(quota?.remaining || 0))));
+        const parsed = Date.parse(quota?.resetTimeRaw || '');
+        if (Number.isFinite(parsed) && parsed < resetMs) {
+            resetMs = parsed;
+            resetRaw = quota.resetTimeRaw;
+            resetTime = quota.resetTime || '—';
+        } else if (!resetRaw && quota?.resetTime && resetTime === '—') {
+            resetTime = quota.resetTime;
+        }
+    }
+    return { remaining, resetRaw, resetTime };
+}
+
+function resetCountdown(raw, fallback) {
+    const resetAt = Date.parse(raw || '');
+    if (!Number.isFinite(resetAt)) return fallback && fallback !== 'N/A' ? `R: ${fallback}` : 'R: —';
+    const minutes = Math.max(0, Math.ceil((resetAt - Date.now()) / 60000));
+    if (minutes === 0) return '即将重置';
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor((minutes % 1440) / 60);
+    const mins = minutes % 60;
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours) parts.push(`${hours}h`);
+    if (!days && mins) parts.push(`${mins}m`);
+    return `R: ${parts.join(' ')}`;
+}
+
+function inlineQuotaRow(label, summary) {
+    if (!summary) return `<div class="inline-quota-row is-empty"><span>${label}</span><i><b></b></i><strong>—</strong><small>暂无</small></div>`;
+    const percent = Math.round(summary.remaining * 100);
+    return `<div class="inline-quota-row" title="${label} · ${percent}% · 重置 ${escapeHtml(summary.resetTime)}"><span>${label}</span><i style="--quota-color:${quotaColor(summary.remaining)}"><b style="width:${percent}%"></b></i><strong>${percent}%</strong><small>${escapeHtml(resetCountdown(summary.resetRaw, summary.resetTime))}</small></div>`;
+}
+
+function renderInlineQuota(target, data) {
+    target.classList.remove('is-loading', 'has-error');
+    target.innerHTML = inlineQuotaRow('Gemini', summarizeQuotaPool(data.models, 'Gemini'))
+        + inlineQuotaRow('Claude', summarizeQuotaPool(data.models, 'Claude'));
+}
+
+async function getQuotaData(filename, force = false) {
+    if (!force && state.quotaCache.has(filename)) return state.quotaCache.get(filename);
+    if (!force && state.quotaRequests.has(filename)) return state.quotaRequests.get(filename);
+    const request = api(`/creds/quota/${encodeURIComponent(filename)}?mode=antigravity`)
+        .then((data) => {
+            state.quotaCache.set(filename, data);
+            return data;
+        })
+        .finally(() => state.quotaRequests.delete(filename));
+    state.quotaRequests.set(filename, request);
+    return request;
+}
+
+async function loadInlineQuota(target, force = false) {
+    const filename = target.dataset.inlineQuota;
+    try {
+        renderInlineQuota(target, await getQuotaData(filename, force));
+    } catch (error) {
+        target.classList.remove('is-loading');
+        target.classList.add('has-error');
+        target.innerHTML = `<span>额度读取失败</span><small>${escapeHtml(error.message)}</small>`;
+    }
+}
+
+function observeInlineQuotas() {
+    const targets = $$('[data-inline-quota]', $('#credentialTable'));
+    const pending = targets.filter((target) => {
+        const cached = state.quotaCache.get(target.dataset.inlineQuota);
+        if (cached) renderInlineQuota(target, cached);
+        return !cached;
+    });
+    if (!pending.length) return;
+    if (!('IntersectionObserver' in window)) {
+        pending.forEach((target) => loadInlineQuota(target));
+        return;
+    }
+    state.quotaObserver = new IntersectionObserver((entries, observer) => {
+        for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            observer.unobserve(entry.target);
+            loadInlineQuota(entry.target);
+        }
+    }, { rootMargin: '180px 0px' });
+    pending.forEach((target) => state.quotaObserver.observe(target));
+}
+
 function quotaColor(value) {
     if (value <= .2) return 'var(--red)';
     if (value <= .5) return 'var(--amber)';
@@ -533,11 +645,7 @@ async function showQuota(filename, modal = false, force = false) {
     if (modal) openModal('模型额度', 'ANTIGRAVITY QUOTA', '<div class="loading">向上游查询额度…</div>');
     else target.innerHTML = '<div class="loading">向上游查询额度…</div>';
     try {
-        let data = state.quotaCache.get(filename);
-        if (!data || force) {
-            data = await api(`/creds/quota/${encodeURIComponent(filename)}?mode=antigravity`);
-            state.quotaCache.set(filename, data);
-        }
+        const data = await getQuotaData(filename, force);
         const html = quotaMarkup(data);
         if (modal) $('#modalBody').innerHTML = html;
         else {
@@ -1091,8 +1199,20 @@ function bindEvents() {
         }
     });
     $('#credentialTable').addEventListener('click', (event) => {
+        const quota = event.target.closest('[data-inline-quota]');
+        if (quota) {
+            showQuota(quota.dataset.inlineQuota, true).catch((error) => toast(error.message, 'error'));
+            return;
+        }
         const button = event.target.closest('[data-menu]');
         if (button) showCredentialMenu(button, button.dataset.menu);
+    });
+    $('#credentialTable').addEventListener('keydown', (event) => {
+        const quota = event.target.closest('[data-inline-quota]');
+        if (quota && ['Enter', ' '].includes(event.key)) {
+            event.preventDefault();
+            showQuota(quota.dataset.inlineQuota, true).catch((error) => toast(error.message, 'error'));
+        }
     });
     document.body.addEventListener('click', (event) => {
         const action = event.target.closest('[data-credential-action]');
