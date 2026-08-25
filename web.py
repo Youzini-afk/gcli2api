@@ -32,6 +32,7 @@ from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
 from src.keeplive import keepalive_service
 from src.mihomo import mihomo_manager
+from src.quota_refresh import quota_refresh_service
 
 # 全局凭证管理器
 global_credential_manager = None
@@ -158,6 +159,8 @@ async def lifespan(app: FastAPI):
         await mihomo_manager.stop()
     except Exception as e:
         log.error(f"关闭 Mihomo 时出错: {e}")
+
+    await quota_refresh_service.shutdown()
 
     # 停止内存回收任务
     if _memory_trim_task and not _memory_trim_task.done():

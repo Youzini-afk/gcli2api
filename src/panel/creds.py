@@ -23,7 +23,6 @@ from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
 from src.api.antigravity import (
     build_antigravity_headers,
-    fetch_quota_info,
     wrap_cli_request,
 )
 from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
@@ -1187,7 +1186,8 @@ async def get_credential_errors(
 async def get_credential_quota(
     filename: str,
     token: str = Depends(verify_panel_token),
-    mode: str = "antigravity"
+    mode: str = "antigravity",
+    refresh: bool = False,
 ):
     """
     获取指定凭证的额度信息（仅支持 antigravity 模式）
@@ -1206,44 +1206,14 @@ async def get_credential_quota(
         if not credential_data:
             raise HTTPException(status_code=404, detail="凭证不存在")
 
-        # 使用 Credentials 对象自动处理 token 刷新
-        from src.google_oauth_api import Credentials
+        from src.quota_refresh import quota_refresh_service
 
-        creds = Credentials.from_dict(credential_data)
+        if not refresh:
+            cached = await quota_refresh_service.get_cached(filename)
+            if cached is not None:
+                return JSONResponse(content=cached)
 
-        # 自动刷新 token（如果需要）
-        await creds.refresh_if_needed()
-
-        # 如果 token 被刷新了，更新存储
-        updated_data = creds.to_dict()
-        if updated_data != credential_data:
-            log.info(f"Token已自动刷新: {filename}")
-            await storage_adapter.store_credential(filename, updated_data, mode=mode)
-            credential_data = updated_data
-
-        # 获取访问令牌
-        access_token = credential_data.get("access_token") or credential_data.get("token")
-        if not access_token:
-            raise HTTPException(status_code=400, detail="凭证中没有访问令牌")
-
-        # 获取额度信息
-        quota_info = await fetch_quota_info(access_token)
-
-        if quota_info.get("success"):
-            return JSONResponse(content={
-                "success": True,
-                "filename": filename,
-                "models": quota_info.get("models", {})
-            })
-        else:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "filename": filename,
-                    "error": quota_info.get("error", "未知错误")
-                }
-            )
+        return JSONResponse(content=await quota_refresh_service.refresh_now(filename))
 
     except HTTPException:
         raise
@@ -1544,7 +1514,9 @@ async def test_credential(
         if mode == "antigravity":
             api_base_url = await get_antigravity_api_url()
             headers = build_antigravity_headers(access_token)
-            quota_info = await fetch_quota_info(access_token)
+            from src.quota_refresh import quota_refresh_service
+
+            quota_info = await quota_refresh_service.refresh_now(filename)
             if quota_info.get("success"):
                 test_model, gemini_remaining = select_antigravity_gemini_test_model(
                     quota_info

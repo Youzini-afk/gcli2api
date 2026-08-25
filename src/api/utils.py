@@ -162,6 +162,15 @@ async def record_api_call_success(
         await credential_manager.record_api_call_result(
             credential_name, True, mode=mode, model_name=model_name
         )
+        if mode == "antigravity":
+            try:
+                from src.quota_refresh import quota_refresh_service
+
+                await quota_refresh_service.maybe_schedule(
+                    credential_name, success=True
+                )
+            except Exception as refresh_error:
+                log.debug(f"请求触发额度刷新检查失败: {refresh_error}")
 
 
 async def record_api_call_error(
@@ -195,6 +204,17 @@ async def record_api_call_error(
             model_name=model_name,
             error_message=error_message
         )
+        if mode == "antigravity":
+            try:
+                from src.quota_refresh import quota_refresh_service
+
+                await quota_refresh_service.maybe_schedule(
+                    credential_name,
+                    success=False,
+                    status_code=status_code,
+                )
+            except Exception as refresh_error:
+                log.debug(f"请求触发额度刷新检查失败: {refresh_error}")
 
 
 # ==================== 429错误处理 ====================

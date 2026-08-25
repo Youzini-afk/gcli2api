@@ -13,6 +13,7 @@ const state = {
     quotaCredentials: [],
     quotaCache: new Map(),
     quotaRequests: new Map(),
+    quotaGeneration: new Map(),
     quotaObserver: null,
     oauthProjectId: '',
     logSocket: null,
@@ -273,7 +274,7 @@ async function loadOverview() {
     }).join('');
 }
 
-async function loadCredentials() {
+async function loadCredentials(forceQuota = false) {
     const container = $('#credentialTable');
     container.innerHTML = '<div class="loading">读取凭证池…</div>';
     const response = await api(credentialQuery(state.credentialMode, {
@@ -283,9 +284,12 @@ async function loadCredentials() {
         tier: $('#tierFilter').value,
     }));
     state.credentialResponse = response;
+    if (forceQuota && state.credentialMode === 'antigravity') {
+        response.items.forEach((item) => invalidateQuota(item.filename));
+    }
     const validNames = new Set(response.items.map((item) => item.filename));
     state.selectedCredentials = new Set([...state.selectedCredentials].filter((name) => validNames.has(name)));
-    renderCredentials();
+    renderCredentials(forceQuota);
 }
 
 function cooldownInfo(cooldowns) {
@@ -306,11 +310,12 @@ function inlineQuotaPlaceholder(filename) {
     </div>`;
 }
 
-function renderCredentials() {
+function renderCredentials(forceQuota = false) {
     state.quotaObserver?.disconnect();
     state.quotaObserver = null;
     const response = state.credentialResponse;
     if (!response) return;
+    $('#refreshCredentialQuotas').classList.toggle('hidden', state.credentialMode !== 'antigravity');
     const query = $('#credentialSearch').value.trim().toLowerCase();
     const items = response.items.filter((item) => !query ||
         item.filename.toLowerCase().includes(query) ||
@@ -346,7 +351,7 @@ function renderCredentials() {
         const antigravity = state.credentialMode === 'antigravity';
         $('#credentialTable').innerHTML = `<div class="table-row header ${antigravity ? 'antigravity-row' : ''}"><input id="selectPage" class="check" type="checkbox" aria-label="选择本页"><span>账号</span><span>状态</span><span>等级 / 能力</span>${antigravity ? '<span>模型额度</span>' : ''}<span>错误 / 冷却</span><span>最近成功</span><span></span></div>${rows}`;
         $('#selectPage').checked = items.length > 0 && items.every((item) => state.selectedCredentials.has(item.filename));
-        if (antigravity) observeInlineQuotas();
+        if (antigravity) observeInlineQuotas(forceQuota);
     }
     const first = response.total ? response.offset + 1 : 0;
     const last = Math.min(response.offset + response.limit, response.total);
@@ -417,9 +422,11 @@ async function runCredentialAction(action, filename) {
         try {
             const result = await api(endpointMap[action], { method: 'POST' });
             toast(result.message || '操作完成');
-        } catch (error) {
-            if (action === 'test') await loadCredentials();
-            throw error;
+        } finally {
+            if (action === 'test') {
+                invalidateQuota(filename);
+                await loadCredentials();
+            }
         }
     } else {
         const result = await api(`/creds/action${suffix}`, {
@@ -576,17 +583,41 @@ function renderInlineQuota(target, data) {
         + inlineQuotaRow('Claude', summarizeQuotaPool(data.models, 'Claude'));
 }
 
+function quotaDataIsFresh(data) {
+    const updatedAt = Number(data?.updated_at);
+    const staleAfter = Number(data?.stale_after_seconds ?? 300);
+    if (!Number.isFinite(updatedAt) || !Number.isFinite(staleAfter)) return false;
+    return Date.now() / 1000 - updatedAt < Math.max(0, staleAfter);
+}
+
 async function getQuotaData(filename, force = false) {
-    if (!force && state.quotaCache.has(filename)) return state.quotaCache.get(filename);
+    if (force) invalidateQuota(filename);
+    const cached = state.quotaCache.get(filename);
+    if (!force && quotaDataIsFresh(cached)) return cached;
+    if (cached) state.quotaCache.delete(filename);
     if (!force && state.quotaRequests.has(filename)) return state.quotaRequests.get(filename);
-    const request = api(`/creds/quota/${encodeURIComponent(filename)}?mode=antigravity`)
+    const generation = state.quotaGeneration.get(filename) || 0;
+    const refreshParam = force ? '&refresh=true' : '';
+    const request = api(`/creds/quota/${encodeURIComponent(filename)}?mode=antigravity${refreshParam}`)
         .then((data) => {
-            state.quotaCache.set(filename, data);
+            if ((state.quotaGeneration.get(filename) || 0) === generation) {
+                state.quotaCache.set(filename, data);
+            }
             return data;
         })
-        .finally(() => state.quotaRequests.delete(filename));
+        .finally(() => {
+            if (state.quotaRequests.get(filename) === request) {
+                state.quotaRequests.delete(filename);
+            }
+        });
     state.quotaRequests.set(filename, request);
     return request;
+}
+
+function invalidateQuota(filename) {
+    state.quotaGeneration.set(filename, (state.quotaGeneration.get(filename) || 0) + 1);
+    state.quotaCache.delete(filename);
+    state.quotaRequests.delete(filename);
 }
 
 async function loadInlineQuota(target, force = false) {
@@ -600,23 +631,24 @@ async function loadInlineQuota(target, force = false) {
     }
 }
 
-function observeInlineQuotas() {
+function observeInlineQuotas(force = false) {
     const targets = $$('[data-inline-quota]', $('#credentialTable'));
     const pending = targets.filter((target) => {
         const cached = state.quotaCache.get(target.dataset.inlineQuota);
-        if (cached) renderInlineQuota(target, cached);
-        return !cached;
+        const fresh = quotaDataIsFresh(cached);
+        if (fresh) renderInlineQuota(target, cached);
+        return !fresh;
     });
     if (!pending.length) return;
     if (!('IntersectionObserver' in window)) {
-        pending.forEach((target) => loadInlineQuota(target));
+        pending.forEach((target) => loadInlineQuota(target, force));
         return;
     }
     state.quotaObserver = new IntersectionObserver((entries, observer) => {
         for (const entry of entries) {
             if (!entry.isIntersecting) continue;
             observer.unobserve(entry.target);
-            loadInlineQuota(entry.target);
+            loadInlineQuota(entry.target, force);
         }
     }, { rootMargin: '180px 0px' });
     pending.forEach((target) => state.quotaObserver.observe(target));
@@ -651,6 +683,9 @@ async function showQuota(filename, modal = false, force = false) {
     else target.innerHTML = '<div class="loading">向上游查询额度…</div>';
     try {
         const data = await getQuotaData(filename, force);
+        $$('[data-inline-quota]', $('#credentialTable')).forEach((item) => {
+            if (item.dataset.inlineQuota === filename) renderInlineQuota(item, data);
+        });
         const html = quotaMarkup(data);
         if (modal) $('#modalBody').innerHTML = html;
         else {
@@ -1189,6 +1224,18 @@ function bindEvents() {
     $('#prevPage').addEventListener('click', () => { state.credentialOffset = Math.max(0, state.credentialOffset - state.credentialLimit); loadCredentials(); });
     $('#nextPage').addEventListener('click', () => { state.credentialOffset += state.credentialLimit; loadCredentials(); });
     $('#credentialTools').addEventListener('click', showCredentialTools);
+    $('#refreshCredentialQuotas').addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        setBusy(button, true, '刷新中…');
+        try {
+            await loadCredentials(true);
+            toast('已清除旧缓存，正在按可见账号刷新额度');
+        } catch (error) {
+            toast(error.message, 'error');
+        } finally {
+            setBusy(button, false);
+        }
+    });
     $('#clearSelection').addEventListener('click', () => { state.selectedCredentials.clear(); renderCredentials(); });
     $('#bulkBar').addEventListener('click', (event) => { const button = event.target.closest('[data-bulk]'); if (button) runBatch(button.dataset.bulk).catch((error) => toast(error.message, 'error')); });
     $('#credentialTable').addEventListener('change', (event) => {
@@ -1206,7 +1253,7 @@ function bindEvents() {
     $('#credentialTable').addEventListener('click', (event) => {
         const quota = event.target.closest('[data-inline-quota]');
         if (quota) {
-            showQuota(quota.dataset.inlineQuota, true).catch((error) => toast(error.message, 'error'));
+            showQuota(quota.dataset.inlineQuota, true, true).catch((error) => toast(error.message, 'error'));
             return;
         }
         const button = event.target.closest('[data-menu]');
@@ -1216,7 +1263,7 @@ function bindEvents() {
         const quota = event.target.closest('[data-inline-quota]');
         if (quota && ['Enter', ' '].includes(event.key)) {
             event.preventDefault();
-            showQuota(quota.dataset.inlineQuota, true).catch((error) => toast(error.message, 'error'));
+            showQuota(quota.dataset.inlineQuota, true, true).catch((error) => toast(error.message, 'error'));
         }
     });
     document.body.addEventListener('click', (event) => {
