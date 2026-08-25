@@ -4,14 +4,15 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/su-kaka/gcli2api/pkgs/container/gcli2api)
+[![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/Youzini-afk/gcli2api/pkgs/container/gcli2api)
+
+本分支基于 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) 持续同步开发，并保留原项目署名与 CNC-1.0 许可。
 
 [English](docs/README_EN.md) | 中文 | [日本語](docs/README_JA.md)
 
 ## 🚀 快速部署 
 
-[![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/97VMEF?referralCode=sukaka)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/su-kaka/gcli2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Youzini-afk/gcli2api)
 ---
 
 ## 安装指南
@@ -70,10 +71,10 @@ bash start.sh
 **Docker 运行命令**
 ```bash
 # 使用通用密码
-docker run -d --name gcli2api --network host -e PASSWORD=pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds ghcr.io/su-kaka/gcli2api:latest
+docker run -d --name gcli2api --network host -e PASSWORD=pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/mihomo:/app/data/mihomo ghcr.io/youzini-afk/gcli2api:latest
 
 # 使用分离密码
-docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds ghcr.io/su-kaka/gcli2api:latest
+docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PASSWORD=panel_pwd -e PORT=7861 -v $(pwd)/data/creds:/app/creds -v $(pwd)/data/mihomo:/app/data/mihomo ghcr.io/youzini-afk/gcli2api:latest
 ```
 
 **Docker Mac**
@@ -86,7 +87,8 @@ docker run -d \
   -e PASSWORD=pwd \
   -e PORT=7861 \
   -v "$(pwd)/data/creds":/app/creds \
-  ghcr.io/su-kaka/gcli2api:latest
+  -v "$(pwd)/data/mihomo":/app/data/mihomo \
+  ghcr.io/youzini-afk/gcli2api:latest
 ```
 
 ```bash
@@ -99,7 +101,8 @@ docker run -d \
 -e PANEL_PASSWORD=panel_pwd \
 -e PORT=7861 \
 -v $(pwd)/data/creds:/app/creds \
-ghcr.io/su-kaka/gcli2api:latest
+-v $(pwd)/data/mihomo:/app/data/mihomo \
+ghcr.io/youzini-afk/gcli2api:latest
 ```
 
 **Docker Compose 运行命令**
@@ -109,7 +112,7 @@ ghcr.io/su-kaka/gcli2api:latest
 
     services:
       gcli2api:
-        image: ghcr.io/su-kaka/gcli2api:latest
+        image: ghcr.io/youzini-afk/gcli2api:latest
         container_name: gcli2api
         restart: unless-stopped
         network_mode: host
@@ -122,6 +125,7 @@ ghcr.io/su-kaka/gcli2api:latest
           # - PANEL_PASSWORD=your_panel_password
         volumes:
           - ./data/creds:/app/creds
+          - ./data/mihomo:/app/data/mihomo
         healthcheck:
           test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + os.environ.get('PASSWORD', 'pwd')}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).getcode() == 200 else 1)\""]
           interval: 30s
@@ -164,7 +168,7 @@ ghcr.io/su-kaka/gcli2api:latest
 **灵活的密码管理**
 - **分离密码支持**：API 密码（聊天端点）和控制面板密码可独立设置
 - **多种认证方式**：支持 Authorization Bearer、x-goog-api-key 头部、URL 参数等
-- **JWT Token 认证**：控制面板支持 JWT 令牌认证
+- **控制台 Bearer 认证**：登录后使用独立控制台密码访问管理接口
 - **用户邮箱获取**：自动获取和显示 Google 账户邮箱地址
 
 ### 📊 智能凭证管理系统
@@ -200,12 +204,14 @@ ghcr.io/su-kaka/gcli2api:latest
 ### 🎛️ Web 管理控制台
 
 **全功能 Web 界面**
+- 全新响应式单页控制台，桌面和移动端共用同一套功能
+- 总览集中显示 Gemini CLI、Antigravity 与网络出口状态
 - OAuth 认证流程管理（支持 GCLI 和 Antigravity 双模式）
 - 凭证文件上传、下载、管理
+- Antigravity 模型额度分组展示与重置时间
+- Mihomo Profile、策略组、节点选择和延迟测试
 - 实时日志查看（WebSocket）
 - 系统配置管理
-- 使用统计和监控面板
-- 移动端适配界面
 
 **批量操作支持**
 - ZIP 文件批量上传凭证（GCLI 和 Antigravity）
@@ -225,6 +231,9 @@ ghcr.io/su-kaka/gcli2api:latest
 
 **网络和代理配置**
 - HTTP/HTTPS 代理支持
+- 内置 Mihomo 核心（Docker amd64/arm64），可将当前节点作为项目出站代理
+- 非 Docker 部署支持 `MIHOMO_BIN_PATH`、控制台 `bin_path` 或系统 `PATH`
+- 使用 Mihomo 进程管理时需保持 `WORKERS=1`；未启用 Mihomo 时仍可使用多 worker
 - 代理端点配置（OAuth、Google APIs、元数据服务）
 - 超时和重试配置
 - 网络错误处理和恢复
@@ -384,14 +393,14 @@ docker run -d --name gcli2api \
   -e MONGODB_URI="mongodb://mongodb:27017" \
   -e API_PASSWORD=your_password \
   --network your_network \
-  ghcr.io/su-kaka/gcli2api:latest
+  ghcr.io/youzini-afk/gcli2api:latest
 
 # 使用 MongoDB Atlas
 docker run -d --name gcli2api \
   -e MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/gcli2api" \
   -e API_PASSWORD=your_password \
   -p 7861:7861 \
-  ghcr.io/su-kaka/gcli2api:latest
+  ghcr.io/youzini-afk/gcli2api:latest
 ```
 
 **Docker Compose 示例**
@@ -412,7 +421,7 @@ services:
       - "27017:27017"
 
   gcli2api:
-    image: ghcr.io/su-kaka/gcli2api:latest
+    image: ghcr.io/youzini-afk/gcli2api:latest
     container_name: gcli2api
     restart: unless-stopped
     depends_on:
@@ -494,14 +503,14 @@ export MONGODB_URI="mongodb://localhost:27017/gcli2api?readPreference=secondaryP
 docker run -d --name gcli2api \
   -e PASSWORD=mypassword \
   -e PORT=7861 \
-  ghcr.io/su-kaka/gcli2api:latest
+  ghcr.io/youzini-afk/gcli2api:latest
 
 # 使用分离密码
 docker run -d --name gcli2api \
   -e API_PASSWORD=my_api_password \
   -e PANEL_PASSWORD=my_panel_password \
   -e PORT=7861 \
-  ghcr.io/su-kaka/gcli2api:latest
+  ghcr.io/youzini-afk/gcli2api:latest
 ```
 
 注意：当设置了凭证环境变量时，系统将优先使用环境变量中的凭证，忽略 `creds` 目录中的文件。
@@ -774,6 +783,17 @@ for part in response.candidates[0].content.parts:
 - `POST /logs/clear` - 清空日志
 - `GET /logs/download` - 下载日志文件
 - `WebSocket /logs/stream` - 实时日志流
+
+**Mihomo 管理端点**
+- `GET /mihomo/status` - 获取核心、Profile 和代理接管状态
+- `PUT /mihomo/config` - 保存运行设置
+- `POST /mihomo/start|stop|restart` - 控制核心生命周期
+- `GET /mihomo/profiles` - 获取 Profile 列表
+- `POST /mihomo/profiles/import-url` - 从公开订阅 URL 导入
+- `POST /mihomo/profiles/import-yaml` - 导入本地 YAML 内容
+- `GET /mihomo/proxies` - 获取策略组和节点
+- `PUT /mihomo/proxies/{group}` - 切换策略组节点
+- `GET /mihomo/proxies/{name}/delay` - 测试节点延迟
 
 **版本信息端点**
 - `GET /version/info` - 获取版本信息（可选 `check_update=true` 参数检查更新）

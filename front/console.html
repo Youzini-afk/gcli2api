@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0b0d12">
+    <title>GCLI Control</title>
+    <link rel="stylesheet" href="/front/control-panel.css">
+</head>
+<body>
+    <svg class="svg-sprite" aria-hidden="true">
+        <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+        <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M20.4 15a9 9 0 1 0-16.8 0"/><path d="m12 15 4-4"/><path d="M8.5 20h7"/></symbol>
+        <symbol id="i-network" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="6" rx="2"/><rect x="3" y="15" width="18" height="6" rx="2"/><path d="M7 6h.01M7 18h.01M17 6h.01M17 18h.01M12 9v6"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.08A1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.08A1.65 1.65 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09A1.65 1.65 0 0 0 19.4 15Z"/></symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+        <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+        <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></symbol>
+        <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></symbol>
+        <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+        <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+        <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13 2-9 12h8l-1 8 9-12h-8l1-8Z"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    </svg>
+
+    <section id="loginView" class="login-view">
+        <div class="login-glow"></div>
+        <div class="login-card">
+            <div class="brand-mark large"><span></span><span></span><span></span></div>
+            <p class="eyebrow">PRIVATE CONTROL PLANE</p>
+            <h1>GCLI Control</h1>
+            <p class="login-copy">凭证、额度与网络出口，一个干净的操作面。</p>
+            <form id="loginForm" class="stack-form">
+                <label class="field"><span>控制台密码</span><input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入密码" required autofocus></label>
+                <button class="button primary full" type="submit">进入控制台</button>
+                <p id="loginError" class="form-error" role="alert"></p>
+            </form>
+        </div>
+    </section>
+
+    <div id="appView" class="app-shell hidden">
+        <div id="sidebarScrim" class="sidebar-scrim"></div>
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-brand"><div class="brand-mark"><span></span><span></span><span></span></div><div><strong>GCLI Control</strong><small>Unified console</small></div></div>
+            <nav class="nav-list" aria-label="主导航">
+                <p class="nav-label">工作台</p>
+                <button class="nav-item active" data-page="overview"><svg><use href="#i-grid"/></svg><span>总览</span></button>
+                <button class="nav-item" data-page="credentials"><svg><use href="#i-users"/></svg><span>凭证</span><b id="navCredentialCount">—</b></button>
+                <button class="nav-item" data-page="quota"><svg><use href="#i-gauge"/></svg><span>额度</span></button>
+                <button class="nav-item" data-page="connect"><svg><use href="#i-plus"/></svg><span>添加凭证</span></button>
+                <p class="nav-label">基础设施</p>
+                <button class="nav-item" data-page="mihomo"><svg><use href="#i-network"/></svg><span>Mihomo</span><i id="mihomoNavDot" class="nav-dot"></i></button>
+                <button class="nav-item" data-page="settings"><svg><use href="#i-settings"/></svg><span>系统配置</span></button>
+                <button class="nav-item" data-page="logs"><svg><use href="#i-terminal"/></svg><span>实时日志</span></button>
+                <button class="nav-item" data-page="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
+            </nav>
+            <div class="sidebar-foot"><div class="service-pill"><i></i><span>API Service</span><strong>Online</strong></div><button id="logoutButton" class="text-button">退出登录</button></div>
+        </aside>
+
+        <main class="main-area">
+            <header class="topbar">
+                <button id="menuButton" class="icon-button mobile-only" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
+                <div><p id="pageEyebrow" class="eyebrow">CONTROL PLANE</p><h2 id="pageTitle">总览</h2></div>
+                <div class="topbar-actions"><button id="globalRefresh" class="icon-button" aria-label="刷新当前页面"><svg><use href="#i-refresh"/></svg></button><span id="clock" class="clock"></span></div>
+            </header>
+
+            <div class="page-stack">
+                <section id="page-overview" class="page active">
+                    <div class="hero-panel"><div><p class="eyebrow">SYSTEM PULSE</p><h1>所有关键状态，<br><em>一眼看完。</em></h1><p>把账号池、额度和网络出口放在同一个工作流里。</p></div><div class="hero-orbit" aria-hidden="true"><span></span><span></span><span></span><b></b></div></div>
+                    <div id="overviewStats" class="stats-grid skeleton-grid"></div>
+                    <div class="overview-grid">
+                        <article class="panel span-2"><div class="panel-head"><div><p class="eyebrow">ACCOUNT POOL</p><h3>凭证健康度</h3></div><button class="text-button" data-go="credentials">管理凭证 →</button></div><div id="healthOverview" class="health-overview"></div></article>
+                        <article class="panel quick-panel"><div class="panel-head"><div><p class="eyebrow">QUICK START</p><h3>快捷操作</h3></div></div><button class="quick-action" data-go="connect"><span class="quick-icon"><svg><use href="#i-plus"/></svg></span><span><b>添加新凭证</b><small>OAuth 或批量上传</small></span></button><button class="quick-action" data-go="quota"><span class="quick-icon violet"><svg><use href="#i-gauge"/></svg></span><span><b>查看模型额度</b><small>按账号刷新余量</small></span></button><button class="quick-action" data-go="mihomo"><span class="quick-icon amber"><svg><use href="#i-network"/></svg></span><span><b>切换出口节点</b><small>管理 Mihomo Profile</small></span></button></article>
+                        <article class="panel span-3"><div class="panel-head"><div><p class="eyebrow">ENDPOINTS</p><h3>接入地址</h3></div></div><div id="endpointList" class="endpoint-list"></div></article>
+                    </div>
+                </section>
+
+                <section id="page-credentials" class="page">
+                    <div class="page-heading"><div><p class="eyebrow">ACCOUNT POOL</p><h1>凭证管理</h1><p>筛选、诊断和批量处理两类凭证。</p></div><button class="button primary" data-go="connect"><svg><use href="#i-plus"/></svg>添加凭证</button></div>
+                    <div class="toolbar panel"><div class="segment" id="credentialMode"><button class="active" data-mode="geminicli">Gemini CLI</button><button data-mode="antigravity">Antigravity</button></div><label class="search-box"><svg><use href="#i-search"/></svg><input id="credentialSearch" type="search" placeholder="搜索邮箱或文件名"></label><select id="statusFilter" aria-label="状态筛选"><option value="all">全部状态</option><option value="enabled">仅启用</option><option value="disabled">仅禁用</option></select><select id="tierFilter" aria-label="等级筛选"><option value="all">全部等级</option><option value="free">Free</option><option value="pro">Pro</option><option value="ultra">Ultra</option></select><button id="credentialTools" class="button ghost"><svg><use href="#i-more"/></svg>更多操作</button></div>
+                    <div id="credentialStats" class="mini-stats"></div>
+                    <div id="bulkBar" class="bulk-bar hidden"><strong><span id="selectedCount">0</span> 项已选择</strong><span></span><button data-bulk="enable">启用</button><button data-bulk="disable">禁用</button><button data-bulk="delete" class="danger-text">删除</button><button id="clearSelection">取消</button></div>
+                    <article class="panel table-panel"><div id="credentialTable" class="data-table"></div><div class="pagination"><button id="prevPage" class="button ghost">上一页</button><span id="pageInfo">—</span><button id="nextPage" class="button ghost">下一页</button></div></article>
+                </section>
+
+                <section id="page-quota" class="page">
+                    <div class="page-heading"><div><p class="eyebrow">MODEL CAPACITY</p><h1>额度中心</h1><p>查看单个 Antigravity 账号的实时模型余量和重置时间。</p></div><button id="refreshQuota" class="button primary"><svg><use href="#i-refresh"/></svg>刷新额度</button></div>
+                    <div class="panel quota-account-bar"><label class="field grow"><span>Antigravity 账号</span><select id="quotaCredential"></select></label><div id="quotaAccountMeta" class="account-meta"></div></div>
+                    <div id="quotaContent" class="quota-content empty-state"><div class="empty-visual gauge-visual"></div><h3>选择账号查看额度</h3><p>额度只在你打开本页或主动刷新时请求。</p></div>
+                </section>
+
+                <section id="page-connect" class="page">
+                    <div class="page-heading"><div><p class="eyebrow">ONBOARDING</p><h1>添加凭证</h1><p>通过 OAuth 完成授权，或直接导入现有凭证。</p></div></div>
+                    <div class="segment page-segment" id="connectMode"><button class="active" data-mode="geminicli">Gemini CLI</button><button data-mode="antigravity">Antigravity</button></div>
+                    <div class="connect-grid">
+                        <article class="panel connect-card accent-card"><div class="step-number">01</div><p class="eyebrow">GOOGLE OAUTH</p><h2>浏览器授权</h2><p>生成授权链接后在 Google 完成登录，再让服务等待回调或粘贴最终回调地址。</p><label class="field"><span>Project ID <small>可选，留空自动检测</small></span><input id="oauthProjectId" placeholder="your-project-id"></label><button id="startOAuth" class="button primary full"><svg><use href="#i-external"/></svg>生成并打开授权链接</button><div id="oauthStepTwo" class="oauth-step hidden"><div class="oauth-ready"><i></i><span>授权链接已生成</span></div><button id="waitOAuth" class="button secondary full">我已授权，等待本机回调</button><div class="or-divider"><span>或</span></div><label class="field"><span>粘贴浏览器最终回调 URL</span><textarea id="callbackUrl" rows="3" placeholder="http://localhost:.../?code=..."></textarea></label><button id="submitCallback" class="button ghost full">提交回调 URL</button></div></article>
+                        <article class="panel connect-card"><div class="step-number">02</div><p class="eyebrow">LOCAL IMPORT</p><h2>批量导入</h2><p>支持单个或多个 JSON，也支持包含 JSON 凭证的 ZIP 文件。</p><label id="uploadDropzone" class="dropzone"><input id="credentialFiles" type="file" accept=".json,.zip" multiple><svg><use href="#i-upload"/></svg><b>选择或拖入凭证文件</b><span>JSON / ZIP，可多选</span></label><div id="fileSelection" class="file-selection">尚未选择文件</div><button id="uploadCredentials" class="button secondary full" disabled>开始导入</button><div id="uploadResult" class="result-box hidden"></div></article>
+                    </div>
+                </section>
+
+                <section id="page-mihomo" class="page">
+                    <div class="page-heading"><div><p class="eyebrow">NETWORK EGRESS</p><h1>Mihomo</h1><p>管理项目代理核心、订阅与当前出口节点。</p></div><div class="button-row"><button id="mihomoStop" class="button ghost">停止</button><button id="mihomoStart" class="button primary"><svg><use href="#i-bolt"/></svg>启动</button></div></div>
+                    <div id="mihomoStatus" class="mihomo-status panel"></div>
+                    <div class="mihomo-grid"><article class="panel profile-panel"><div class="panel-head"><div><p class="eyebrow">PROFILES</p><h3>配置来源</h3></div><button id="openProfileImport" class="icon-button"><svg><use href="#i-plus"/></svg></button></div><div id="profileList" class="profile-list"></div></article><article class="panel node-panel"><div class="panel-head"><div><p class="eyebrow">ROUTING</p><h3>策略组与节点</h3></div><label class="search-box compact"><svg><use href="#i-search"/></svg><input id="nodeSearch" type="search" placeholder="搜索节点"></label></div><div id="proxyWorkspace" class="proxy-workspace empty-state"><p>启动 Mihomo 后显示策略组。</p></div></article></div>
+                    <details class="panel settings-disclosure"><summary><span><p class="eyebrow">RUNTIME</p><b>Mihomo 运行设置</b></span><span>展开配置</span></summary><form id="mihomoConfigForm" class="settings-grid"></form></details>
+                </section>
+
+                <section id="page-settings" class="page"><div class="page-heading"><div><p class="eyebrow">SYSTEM</p><h1>系统配置</h1><p>环境变量锁定的项目会保持只读，其他配置可热更新。</p></div><button id="saveSettings" class="button primary">保存配置</button></div><form id="settingsForm" class="settings-layout"></form></section>
+
+                <section id="page-logs" class="page"><div class="page-heading"><div><p class="eyebrow">OBSERVABILITY</p><h1>实时日志</h1><p><span id="logStatusDot" class="inline-dot"></span><span id="logStatus">未连接</span></p></div><div class="button-row"><button id="clearLogs" class="button ghost">清空</button><button id="downloadLogs" class="button secondary"><svg><use href="#i-download"/></svg>下载</button></div></div><article class="terminal-panel"><div class="terminal-top"><span></span><span></span><span></span><b>gcli2api / live</b><button id="pauseLogs" class="text-button">暂停滚动</button></div><pre id="logOutput">等待日志连接…</pre></article></section>
+
+                <section id="page-about" class="page"><div class="page-heading"><div><p class="eyebrow">PROJECT</p><h1>关于</h1><p>一个非商业、社区驱动的 Gemini 兼容 API 控制面。</p></div></div><div class="about-grid"><article class="panel about-hero"><div class="brand-mark large"><span></span><span></span><span></span></div><h2>GCLI Control</h2><p>以 gcli2api 为代理核心，融合可视化额度与 Mihomo 网络出口管理。</p><div id="versionInfo" class="version-pill">读取版本中…</div></article><article class="panel"><p class="eyebrow">COMPATIBILITY</p><h3>协议入口</h3><div id="aboutEndpoints" class="endpoint-list compact-list"></div></article><article class="panel"><p class="eyebrow">LICENSE</p><h3>CNC-1.0</h3><p class="muted-copy">本项目仅供非商业使用。分发修改版本时需要保留许可与来源，并按相同条款提供源代码。</p><a class="button ghost" href="https://github.com/Youzini-afk/gcli2api" target="_blank" rel="noreferrer"><svg><use href="#i-external"/></svg>查看仓库</a></article></div></section>
+            </div>
+        </main>
+    </div>
+
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-backdrop" data-close-modal></div><div class="modal-card"><header><div><p id="modalEyebrow" class="eyebrow">DETAIL</p><h2 id="modalTitle">详情</h2></div><button class="icon-button" data-close-modal aria-label="关闭"><svg><use href="#i-close"/></svg></button></header><div id="modalBody" class="modal-body"></div></div></div>
+    <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/front/control-panel.js"></script>
+</body>
+</html>

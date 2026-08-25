@@ -12,6 +12,7 @@ from typing import Any, Optional
 # 全局配置缓存
 _config_cache: dict[str, Any] = {}
 _config_initialized = False
+_runtime_proxy_override: Optional[str] = None
 
 # Client Configuration
 
@@ -115,8 +116,16 @@ async def get_config_value(key: str, default: Any = None, env_var: Optional[str]
 # Configuration getters - all async
 async def get_proxy_config():
     """Get proxy configuration."""
+    if _runtime_proxy_override:
+        return _runtime_proxy_override
     proxy_url = await get_config_value("proxy", env_var="PROXY")
     return proxy_url if proxy_url else None
+
+
+def set_runtime_proxy(proxy_url: Optional[str]) -> None:
+    """Set an in-memory proxy override for managed local services such as Mihomo."""
+    global _runtime_proxy_override
+    _runtime_proxy_override = proxy_url or None
 
 
 async def get_auto_ban_enabled() -> bool:

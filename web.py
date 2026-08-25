@@ -31,6 +31,7 @@ from src.router.geminicli.model_list import router as geminicli_model_list_route
 from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
 from src.keeplive import keepalive_service
+from src.mihomo import mihomo_manager
 
 # 全局凭证管理器
 global_credential_manager = None
@@ -129,6 +130,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"保活服务启动失败: {e}")
 
+    # Mihomo 未启用时此调用零开销；启用自动启动后恢复上次 Profile 和节点选择。
+    await mihomo_manager.auto_start()
+
     # 启动内存回收任务（定期 GC + malloc_trim）
     global _memory_trim_task
     _memory_trim_task = asyncio.create_task(
@@ -149,6 +153,11 @@ async def lifespan(app: FastAPI):
         await keepalive_service.stop()
     except Exception as e:
         log.error(f"关闭保活服务时出错: {e}")
+
+    try:
+        await mihomo_manager.stop()
+    except Exception as e:
+        log.error(f"关闭 Mihomo 时出错: {e}")
 
     # 停止内存回收任务
     if _memory_trim_task and not _memory_trim_task.done():
