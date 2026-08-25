@@ -21,7 +21,11 @@ from src.models import (
 )
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
-from src.api.antigravity import fetch_quota_info
+from src.api.antigravity import (
+    build_antigravity_headers,
+    fetch_quota_info,
+    wrap_cli_request,
+)
 from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from config import get_code_assist_endpoint, get_antigravity_api_url
 from .utils import validate_mode
@@ -29,6 +33,35 @@ from .utils import validate_mode
 
 # 创建路由器
 router = APIRouter(prefix="/creds", tags=["credentials"])
+
+ANTIGRAVITY_GEMINI_TEST_FALLBACK = "gemini-3-flash-preview"
+
+
+def select_antigravity_gemini_test_model(
+    quota_info: dict[str, Any],
+) -> tuple[str, float | None]:
+    """Select the most constrained text Gemini model from the displayed quota pool."""
+    models = quota_info.get("models", {}) if isinstance(quota_info, dict) else {}
+    candidates: list[tuple[str, float]] = []
+    for model_name, quota in models.items():
+        normalized = str(model_name).lower()
+        if "gemini" not in normalized or any(
+            marker in normalized for marker in ("image", "imagen", "banana")
+        ):
+            continue
+        try:
+            remaining = max(0.0, min(1.0, float((quota or {}).get("remaining", 0))))
+        except (TypeError, ValueError):
+            continue
+        candidates.append((str(model_name), remaining))
+    if not candidates:
+        return ANTIGRAVITY_GEMINI_TEST_FALLBACK, None
+    return min(candidates, key=lambda item: item[1])
+
+
+def credential_test_succeeded(mode: str, status_code: int) -> bool:
+    """429 only proves identity validity for Gemini CLI; for AG it means Gemini is unusable."""
+    return status_code == 200 or (mode == "geminicli" and status_code == 429)
 
 
 # =============================================================================
@@ -1503,15 +1536,42 @@ async def test_credential(
         if not project_id:
             raise HTTPException(status_code=400, detail="凭证中没有项目ID")
 
-        # 根据模式选择 API 端点和请求头
-        # 对于 geminicli 模式，使用两次测试：gemini-2.5-flash 和 gemini-3-flash-preview
-        # 对于 antigravity 模式，只使用 gemini-2.5-flash
+        # Geminicli 保持既有 flash 探针；Antigravity 则选择当前 Gemini 池中
+        # 剩余额度最低的文本模型，确保测试结果与控制台显示的 Gemini 池一致。
         test_model = "gemini-2.5-flash"
+        gemini_remaining = None
 
         if mode == "antigravity":
             api_base_url = await get_antigravity_api_url()
-            from src.api.antigravity import build_antigravity_headers
             headers = build_antigravity_headers(access_token)
+            quota_info = await fetch_quota_info(access_token)
+            if quota_info.get("success"):
+                test_model, gemini_remaining = select_antigravity_gemini_test_model(
+                    quota_info
+                )
+
+            if gemini_remaining is not None and gemini_remaining <= 0:
+                message = f"Gemini 额度已耗尽（{test_model}：0%）"
+                await storage_adapter.update_credential_state(
+                    filename,
+                    {
+                        "error_codes": [429],
+                        "error_messages": {"429": message},
+                    },
+                    mode=mode,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "success": False,
+                        "status_code": 429,
+                        "pool": "gemini",
+                        "model": test_model,
+                        "remaining": gemini_remaining,
+                        "message": message,
+                        "filename": filename,
+                    },
+                )
         else:
             api_base_url = await get_code_assist_endpoint()
             headers = {
@@ -1520,25 +1580,30 @@ async def test_credential(
                 "User-Agent": GEMINICLI_USER_AGENT,
             }
 
-        # 第一次测试：使用 gemini-2.5-flash
+        request_body = {
+            "model": test_model,
+            "project": project_id,
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1},
+            },
+        }
+        if mode == "antigravity":
+            request_body, _request_id = await wrap_cli_request(
+                request_body["request"], test_model, project_id, enable_credit=False
+            )
+
         response = await post_async(
             url=f"{api_base_url}/v1internal:generateContent",
-            json={
-                "model": test_model,
-                "project": project_id,
-                "request": {
-                    "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
-                    "generationConfig": {"maxOutputTokens": 1}
-                }
-            },
+            json=request_body,
             headers=headers,
-            timeout=30.0
+            timeout=30.0,
         )
 
         # 返回实际的状态码和详细信息
         status_code = response.status_code
 
-        if status_code == 200 or status_code == 429:
+        if credential_test_succeeded(mode, status_code):
             log.info(f"凭证测试成功: {filename} (mode={mode}, model={test_model}, status={status_code})")
             # 测试成功时清除错误状态
             if status_code == 200:
@@ -1593,8 +1658,14 @@ async def test_credential(
                 content={
                     "success": True,
                     "status_code": status_code,
-                    "message": "测试成功",
-                    "filename": filename
+                    "message": (
+                        f"Gemini 测试成功（{test_model}）"
+                        if mode == "antigravity"
+                        else "测试成功"
+                    ),
+                    "pool": "gemini" if mode == "antigravity" else None,
+                    "model": test_model,
+                    "filename": filename,
                 }
             )
         else:
@@ -1623,14 +1694,21 @@ async def test_credential(
         # 返回错误响应，包含完整的错误信息
         error_text = response.text if hasattr(response, 'text') else ""
 
+        failure_message = (
+            f"Gemini 测试失败：额度耗尽或限流（HTTP 429，{test_model}）"
+            if mode == "antigravity" and status_code == 429
+            else f"测试失败: HTTP {status_code}"
+        )
         return JSONResponse(
             status_code=status_code,
             content={
                 "success": False,
                 "status_code": status_code,
-                "message": f"测试失败: HTTP {status_code}",
+                "message": failure_message,
                 "error": error_text,
-                "filename": filename
+                "pool": "gemini" if mode == "antigravity" else None,
+                "model": test_model,
+                "filename": filename,
             }
         )
 

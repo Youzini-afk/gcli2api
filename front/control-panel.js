@@ -414,8 +414,13 @@ async function runCredentialAction(action, filename) {
         preview: `/creds/configure-preview/${encodeURIComponent(filename)}${suffix}`,
     };
     if (endpointMap[action]) {
-        const result = await api(endpointMap[action], { method: 'POST' });
-        toast(result.message || '操作完成');
+        try {
+            const result = await api(endpointMap[action], { method: 'POST' });
+            toast(result.message || '操作完成');
+        } catch (error) {
+            if (action === 'test') await loadCredentials();
+            throw error;
+        }
     } else {
         const result = await api(`/creds/action${suffix}`, {
             method: 'POST',
