@@ -23,10 +23,10 @@ from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
 from src.api.antigravity import (
     build_antigravity_headers,
+    get_confirmed_429_cooldown,
     wrap_cli_request,
 )
 from src.api.utils import (
-    parse_and_log_cooldown,
     parse_quota_reset_timestamp,
     record_api_call_error,
 )
@@ -1666,9 +1666,9 @@ async def test_credential(
                 log.error(f"凭证测试错误详情 - 文件: {filename}, 模式: {mode}, 状态码: {status_code}, 错误内容: {error_text}")
 
                 cooldown_until = None
-                if mode == "antigravity" and status_code in (429, 503) and error_text:
-                    cooldown_until = await parse_and_log_cooldown(
-                        error_text, mode=mode
+                if mode == "antigravity" and status_code == 429:
+                    cooldown_until = await get_confirmed_429_cooldown(
+                        filename, test_model, error_text
                     )
                 await record_api_call_error(
                     credential_manager,

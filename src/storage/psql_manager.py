@@ -243,7 +243,10 @@ class PSQLManager:
     # ============ 凭证查询方法 ============
 
     async def get_next_available_credential(
-        self, mode: str = "geminicli", model_name: Optional[str] = None
+        self,
+        mode: str = "geminicli",
+        model_name: Optional[str] = None,
+        exclude_filenames: Optional[set[str]] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """随机获取一个可用凭证（负载均衡）"""
         self._ensure_initialized()
@@ -260,6 +263,8 @@ class PSQLManager:
                         WHERE disabled = 0
                         ORDER BY RANDOM()
                     """)
+                    excluded = exclude_filenames or set()
+                    rows = [row for row in rows if row["filename"] not in excluded]
 
                     if not model_name:
                         if rows:
@@ -296,6 +301,8 @@ class PSQLManager:
                         WHERE disabled = 0
                         ORDER BY RANDOM()
                     """)
+                    excluded = exclude_filenames or set()
+                    rows = [row for row in rows if row["filename"] not in excluded]
 
                     if not model_name:
                         if rows:

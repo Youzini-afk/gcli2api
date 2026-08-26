@@ -60,7 +60,10 @@ class CredentialManager:
         log.debug("Credential manager closed")
 
     async def get_valid_credential(
-        self, mode: str = "geminicli", model_name: Optional[str] = None
+        self,
+        mode: str = "geminicli",
+        model_name: Optional[str] = None,
+        exclude_filenames: Optional[set[str]] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取有效的凭证 - 随机负载均衡版
@@ -82,7 +85,9 @@ class CredentialManager:
         for attempt in range(max_retries):
             cooldown_key = normalize_model_cooldown_key(mode, model_name)
             result = await self._storage_adapter._backend.get_next_available_credential(
-                mode=mode, model_name=cooldown_key
+                mode=mode,
+                model_name=cooldown_key,
+                exclude_filenames=exclude_filenames,
             )
 
             # 如果没有可用凭证，直接返回None

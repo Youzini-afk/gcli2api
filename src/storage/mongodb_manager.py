@@ -388,7 +388,12 @@ class MongoDBManager:
             log.warning(f"Redis sync_cred error: {e}")
 
     async def _get_next_available_from_redis(
-        self, mode: str, model_name: Optional[str], exclude_free_tier: bool = False, preview_only: bool = False
+        self,
+        mode: str,
+        model_name: Optional[str],
+        exclude_free_tier: bool = False,
+        preview_only: bool = False,
+        exclude_filenames: Optional[set[str]] = None,
     ) -> Optional[tuple]:
         """
         Redis 快速路径：随机取候选凭证，跳过冷却中的，返回 (filename, credential_data)。
@@ -435,6 +440,15 @@ class MongoDBManager:
                     return None
                 sample_size = min(pool_size, 10)
                 candidates = await self._redis.srandmember(pool_key, sample_size)
+                if not candidates:
+                    return None
+
+            if exclude_filenames:
+                candidates = [
+                    filename
+                    for filename in candidates
+                    if filename not in exclude_filenames
+                ]
                 if not candidates:
                     return None
 
@@ -497,7 +511,10 @@ class MongoDBManager:
     # ============ SQL 方法 ============
 
     async def get_next_available_credential(
-        self, mode: str = "geminicli", model_name: Optional[str] = None
+        self,
+        mode: str = "geminicli",
+        model_name: Optional[str] = None,
+        exclude_filenames: Optional[set[str]] = None,
     ) -> Optional[tuple[str, Dict[str, Any]]]:
         """
         随机获取一个可用凭证（负载均衡）
@@ -521,7 +538,11 @@ class MongoDBManager:
             exclude_free = False
             preview_only = mode == "geminicli" and "preview" in model_lower
             result = await self._get_next_available_from_redis(
-                mode, model_name, exclude_free_tier=exclude_free, preview_only=preview_only
+                mode,
+                model_name,
+                exclude_free_tier=exclude_free,
+                preview_only=preview_only,
+                exclude_filenames=exclude_filenames,
             )
             if result is not None:
                 return result
@@ -535,6 +556,8 @@ class MongoDBManager:
 
             # 构建普通查询（避免 $sample 聚合导致全集合扫描）
             match_query: Dict[str, Any] = {"disabled": False}
+            if exclude_filenames:
+                match_query["filename"] = {"$nin": list(exclude_filenames)}
 
             # preview 模型只允许 preview=True 的凭证
             if mode == "geminicli" and model_name and "preview" in model_name.lower():

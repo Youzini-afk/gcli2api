@@ -6,13 +6,15 @@ from fastapi import Response
 import src.api.antigravity as antigravity_api
 import src.api.utils as api_utils
 import src.quota_refresh as quota_refresh_module
-from src.api.antigravity import _is_retryable_status
+from src.api.antigravity import get_confirmed_429_cooldown, _is_retryable_status
 from src.credential_manager import (
     ANTIGRAVITY_CLAUDE_POOL_KEY,
     ANTIGRAVITY_GEMINI_POOL_KEY,
     CredentialManager,
     normalize_model_cooldown_key,
 )
+from src.quota_refresh import summarize_quota_pool
+from src.storage.sqlite_manager import SQLiteManager
 
 
 def test_antigravity_quota_reset_timestamp_is_not_discarded():
@@ -73,13 +75,36 @@ def test_antigravity_models_share_two_cooldown_pools(model_name, expected):
     assert normalize_model_cooldown_key("geminicli", model_name) == model_name
 
 
+def test_quota_confirmation_uses_the_requested_shared_pool():
+    models = {
+        "gemini-3.7-flash-low": {
+            "remaining": 0.84,
+            "resetTimeRaw": "2030-09-01T15:40:16Z",
+        },
+        "gemini-3-pro-high": {
+            "remaining": 0.91,
+            "resetTimeRaw": "2030-09-01T16:40:16Z",
+        },
+        "claude-sonnet-4-5": {
+            "remaining": 0.03,
+            "resetTimeRaw": "2030-08-31T15:40:16Z",
+        },
+    }
+
+    gemini_remaining, _ = summarize_quota_pool(models, "gemini-3.7-flash-low")
+    claude_remaining, _ = summarize_quota_pool(models, "claude-sonnet-4-5")
+
+    assert gemini_remaining == 0.84
+    assert claude_remaining == 0.03
+
+
 @pytest.mark.asyncio
 async def test_credential_manager_selects_and_records_by_antigravity_pool():
     calls = []
 
     class FakeBackend:
-        async def get_next_available_credential(self, *, mode, model_name):
-            calls.append(("select", mode, model_name))
+        async def get_next_available_credential(self, *, mode, model_name, exclude_filenames):
+            calls.append(("select", mode, model_name, exclude_filenames))
             return None
 
         async def set_model_cooldown(self, filename, model_name, cooldown_until, *, mode):
@@ -110,7 +135,7 @@ async def test_credential_manager_selects_and_records_by_antigravity_pool():
         model_name="gemini-3.7-flash-low",
     )
 
-    assert ("select", "antigravity", ANTIGRAVITY_GEMINI_POOL_KEY) in calls
+    assert ("select", "antigravity", ANTIGRAVITY_GEMINI_POOL_KEY, None) in calls
     assert (
         "cooldown",
         "account.json",
@@ -118,6 +143,29 @@ async def test_credential_manager_selects_and_records_by_antigravity_pool():
         2_000_000_000.0,
         "antigravity",
     ) in calls
+
+
+@pytest.mark.asyncio
+async def test_sqlite_retry_excludes_credentials_already_attempted(monkeypatch, tmp_path):
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    storage = SQLiteManager()
+    await storage.initialize()
+    try:
+        await storage.store_credential("first.json", {"access_token": "first"}, mode="antigravity")
+        await storage.store_credential(
+            "second.json", {"access_token": "second"}, mode="antigravity"
+        )
+
+        selected = await storage.get_next_available_credential(
+            mode="antigravity",
+            model_name=ANTIGRAVITY_GEMINI_POOL_KEY,
+            exclude_filenames={"first.json"},
+        )
+
+        assert selected is not None
+        assert selected[0] == "second.json"
+    finally:
+        await storage.close()
 
 
 @pytest.mark.asyncio
@@ -139,14 +187,16 @@ async def test_retry_records_unavailable_credential_before_selecting_next(
             self.error_recorded = False
             self.disabled = False
 
-        async def get_valid_credential(self, *, mode, model_name):
+        async def get_valid_credential(self, *, mode, model_name, exclude_filenames=None):
             self.selection_count += 1
             if self.selection_count == 1:
+                assert not exclude_filenames
                 return "bad.json", {
                     "access_token": "bad",
                     "project_id": "bad-project",
                 }
             assert self.error_recorded is True
+            assert "bad.json" in exclude_filenames
             if first_status == 403:
                 assert self.disabled is True
             return "good.json", {
@@ -211,6 +261,14 @@ async def test_retry_records_unavailable_credential_before_selecting_next(
     async def fake_quota_refresh(*_args, **_kwargs):
         return False
 
+    async def fake_pool_inspection(*_args, **_kwargs):
+        return {
+            "confirmed_exhausted": True,
+            "remaining": 0.04,
+            "reset_at": None,
+            "error": None,
+        }
+
     monkeypatch.setattr(antigravity_api, "credential_manager", manager)
     monkeypatch.setattr(antigravity_api, "post_async", fake_post_async)
     monkeypatch.setattr(antigravity_api, "stream_post_async", fake_stream_post_async)
@@ -227,6 +285,11 @@ async def test_retry_records_unavailable_credential_before_selecting_next(
         "maybe_schedule",
         fake_quota_refresh,
     )
+    monkeypatch.setattr(
+        quota_refresh_module.quota_refresh_service,
+        "inspect_pool_after_429",
+        fake_pool_inspection,
+    )
 
     request = {"model": "gemini-3.7-flash-low", "request": {}}
     if streaming:
@@ -238,3 +301,30 @@ async def test_retry_records_unavailable_credential_before_selecting_next(
         assert response.status_code == 200
     assert manager.selection_count == 2
     assert _is_retryable_status(first_status, []) is True
+
+
+@pytest.mark.asyncio
+async def test_transient_429_with_healthy_quota_does_not_persist_cooldown(
+    monkeypatch,
+):
+    async def healthy_pool(*_args, **_kwargs):
+        return {
+            "confirmed_exhausted": False,
+            "remaining": 0.84,
+            "reset_at": "2030-09-01T15:40:16Z",
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        quota_refresh_module.quota_refresh_service,
+        "inspect_pool_after_429",
+        healthy_pool,
+    )
+
+    cooldown = await get_confirmed_429_cooldown(
+        "account.json",
+        "gemini-3.7-flash-low",
+        '{"error":{"status":"RESOURCE_EXHAUSTED","details":' '[{"retryDelay":"155h"}]}}',
+    )
+
+    assert cooldown is None

@@ -193,6 +193,39 @@ def _is_retryable_status(status_code: int, disable_error_codes: List[int]) -> bo
     return status_code in (401, 403, 429, 503) or status_code in disable_error_codes
 
 
+async def get_confirmed_429_cooldown(
+    filename: str,
+    model_name: str,
+    error_text: str,
+) -> Optional[float]:
+    """Persist a 429 cooldown only when refreshed pool quota is at or below 5%."""
+    from src.quota_refresh import quota_refresh_service
+
+    pool = await quota_refresh_service.inspect_pool_after_429(filename, model_name)
+    remaining = pool.get("remaining")
+    if not pool.get("confirmed_exhausted"):
+        remaining_text = f"{float(remaining) * 100:.1f}%" if remaining is not None else "unknown"
+        log.info(
+            f"[ANTIGRAVITY] 429 treated as transient for {filename}; "
+            f"pool remaining={remaining_text}, no persistent cooldown"
+        )
+        return None
+
+    cooldown_until = None
+    if error_text:
+        cooldown_until = await parse_and_log_cooldown(error_text, mode="antigravity")
+    if cooldown_until is None and pool.get("reset_at"):
+        cooldown_until = await parse_and_log_cooldown(
+            json.dumps({"error": {"quotaResetTimeStamp": pool["reset_at"]}}),
+            mode="antigravity",
+        )
+    log.info(
+        f"[ANTIGRAVITY] 429 confirmed as quota exhaustion for {filename}; "
+        f"pool remaining={float(remaining) * 100:.1f}%"
+    )
+    return cooldown_until
+
+
 async def _switch_credential_for_retry(
     *,
     next_cred_task: Optional[asyncio.Task],
@@ -257,6 +290,7 @@ async def stream_request(
         return
 
     current_file, credential_data = cred_result
+    attempted_files = {current_file}
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
     enable_credit = bool(credential_data.get("enable_credit", False))
@@ -293,11 +327,14 @@ async def stream_request(
     async def refresh_credential_fast():
         nonlocal current_file, access_token, auth_headers, project_id, final_payload
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name
+            mode="antigravity",
+            model_name=model_name,
+            exclude_filenames=set(attempted_files),
         )
         if not cred_result:
             return None
         current_file, credential_data = cred_result
+        attempted_files.add(current_file)
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -310,6 +347,7 @@ async def stream_request(
     def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
         nonlocal current_file, access_token, project_id, auth_headers, final_payload
         current_file, credential_data = cred_result
+        attempted_files.add(current_file)
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token or not project_id:
@@ -350,10 +388,10 @@ async def stream_request(
 
                         # 解析冷却时间
                         cooldown_until = None
-                        if (status_code == 429 or status_code == 503) and error_body:
+                        if status_code == 429:
                             try:
-                                cooldown_until = await parse_and_log_cooldown(
-                                    error_body, mode="antigravity"
+                                cooldown_until = await get_confirmed_429_cooldown(
+                                    current_file, model_name, error_body
                                 )
                             except Exception:
                                 pass
@@ -373,7 +411,9 @@ async def stream_request(
                         if next_cred_task is None and attempt < max_retries:
                             next_cred_task = asyncio.create_task(
                                 credential_manager.get_valid_credential(
-                                    mode="antigravity", model_name=model_name
+                                    mode="antigravity",
+                                    model_name=model_name,
+                                    exclude_filenames=set(attempted_files),
                                 )
                             )
 
@@ -570,6 +610,7 @@ async def non_stream_request(
         )
 
     current_file, credential_data = cred_result
+    attempted_files = {current_file}
     access_token = credential_data.get("access_token") or credential_data.get("token")
     project_id = credential_data.get("project_id", "")
     enable_credit = bool(credential_data.get("enable_credit", False))
@@ -605,11 +646,14 @@ async def non_stream_request(
     async def refresh_credential_fast():
         nonlocal current_file, access_token, auth_headers, project_id, final_payload
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name
+            mode="antigravity",
+            model_name=model_name,
+            exclude_filenames=set(attempted_files),
         )
         if not cred_result:
             return None
         current_file, credential_data = cred_result
+        attempted_files.add(current_file)
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token:
@@ -622,6 +666,7 @@ async def non_stream_request(
     def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
         nonlocal current_file, access_token, project_id, auth_headers, final_payload
         current_file, credential_data = cred_result
+        attempted_files.add(current_file)
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
         if not access_token or not project_id:
@@ -696,10 +741,10 @@ async def non_stream_request(
 
                     # 解析冷却时间
                     cooldown_until = None
-                    if (status_code == 429 or status_code == 503) and error_text:
+                    if status_code == 429:
                         try:
-                            cooldown_until = await parse_and_log_cooldown(
-                                error_text, mode="antigravity"
+                            cooldown_until = await get_confirmed_429_cooldown(
+                                current_file, model_name, error_text
                             )
                         except Exception:
                             pass
@@ -719,7 +764,9 @@ async def non_stream_request(
                     if next_cred_task is None and attempt < max_retries:
                         next_cred_task = asyncio.create_task(
                             credential_manager.get_valid_credential(
-                                mode="antigravity", model_name=model_name
+                                mode="antigravity",
+                                model_name=model_name,
+                                exclude_filenames=set(attempted_files),
                             )
                         )
 

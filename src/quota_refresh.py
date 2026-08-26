@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from datetime import datetime
 from typing import Any
 
 from log import log
@@ -12,6 +13,33 @@ from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
 
 DEFAULT_QUOTA_STALE_SECONDS = 5 * 60
+QUOTA_COOLDOWN_THRESHOLD = 0.05
+
+
+def summarize_quota_pool(
+    models: dict[str, Any], model_name: str
+) -> tuple[float | None, str | None]:
+    """Return the minimum remaining quota and earliest reset for a shared pool."""
+    wants_claude = "claude" in model_name.lower()
+    remaining_values: list[float] = []
+    reset_timestamps: list[tuple[float, str]] = []
+    for name, quota in models.items():
+        if ("claude" in name.lower()) != wants_claude or not isinstance(quota, dict):
+            continue
+        try:
+            remaining_values.append(max(0.0, min(1.0, float(quota.get("remaining", 0)))))
+        except (TypeError, ValueError):
+            continue
+        reset_raw = quota.get("resetTimeRaw")
+        if reset_raw:
+            try:
+                parsed = datetime.fromisoformat(str(reset_raw).replace("Z", "+00:00")).timestamp()
+                reset_timestamps.append((parsed, str(reset_raw)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    remaining = min(remaining_values) if remaining_values else None
+    reset_at = min(reset_timestamps)[1] if reset_timestamps else None
+    return remaining, reset_at
 
 
 class QuotaRefreshService:
@@ -101,6 +129,30 @@ class QuotaRefreshService:
             if not task or task.done():
                 task = self._start_task(filename)
         return await asyncio.shield(task)
+
+    async def inspect_pool_after_429(self, filename: str, model_name: str) -> dict[str, Any]:
+        """Refresh quota after a 429 and decide whether it is actual pool exhaustion."""
+        # This synchronous check already refreshes quota; prevent the later
+        # error recorder from scheduling the same 429 transition a second time.
+        self._last_event[filename] = "error:429"
+        try:
+            quota = await self.refresh_now(filename)
+        except Exception as error:
+            return {
+                "confirmed_exhausted": False,
+                "remaining": None,
+                "reset_at": None,
+                "error": str(error),
+            }
+        remaining, reset_at = summarize_quota_pool(quota.get("models", {}), model_name)
+        return {
+            "confirmed_exhausted": (
+                remaining is not None and remaining <= QUOTA_COOLDOWN_THRESHOLD
+            ),
+            "remaining": remaining,
+            "reset_at": reset_at,
+            "error": None,
+        }
 
     def _start_task(self, filename: str) -> asyncio.Task:
         self._last_attempt[filename] = time.time()
