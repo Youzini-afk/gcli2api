@@ -301,7 +301,11 @@ function cooldownInfo(cooldowns) {
         return timestamp ? timestamp * (timestamp < 1e12 ? 1000 : 1) > Date.now() : Boolean(value);
     });
     if (!active.length) return ['无冷却', ''];
-    return [`${active.length} 个模型`, active.map(([name]) => name).slice(0, 2).join(' · ')];
+    const label = (name) => ({
+        'pool:gemini': 'Gemini 池',
+        'pool:claude': 'Claude 池',
+    })[name] || name;
+    return [`${active.length} 个额度池`, active.map(([name]) => label(name)).slice(0, 2).join(' · ')];
 }
 
 function inlineQuotaPlaceholder(filename) {

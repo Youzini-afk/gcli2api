@@ -12,6 +12,19 @@ from log import log
 from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
 
+ANTIGRAVITY_GEMINI_POOL_KEY = "pool:gemini"
+ANTIGRAVITY_CLAUDE_POOL_KEY = "pool:claude"
+
+
+def normalize_model_cooldown_key(mode: str, model_name: Optional[str]) -> Optional[str]:
+    """Use shared Gemini/Claude quota pools for Antigravity cooldown routing."""
+    if not model_name or mode != "antigravity":
+        return model_name
+    if "claude" in model_name.lower():
+        return ANTIGRAVITY_CLAUDE_POOL_KEY
+    return ANTIGRAVITY_GEMINI_POOL_KEY
+
+
 class CredentialManager:
     """
     统一凭证管理器
@@ -67,8 +80,9 @@ class CredentialManager:
         # 最多重试3次
         max_retries = 3
         for attempt in range(max_retries):
+            cooldown_key = normalize_model_cooldown_key(mode, model_name)
             result = await self._storage_adapter._backend.get_next_available_credential(
-                mode=mode, model_name=model_name
+                mode=mode, model_name=cooldown_key
             )
 
             # 如果没有可用凭证，直接返回None
@@ -90,7 +104,9 @@ class CredentialManager:
                     return filename, credential_data
                 else:
                     # 刷新失败（_refresh_token内部已自动禁用失效凭证）
-                    log.warning(f"Token刷新失败，尝试获取下一个凭证: {filename} (mode={mode}, attempt={attempt+1}/{max_retries})")
+                    log.warning(
+                        f"Token刷新失败，尝试获取下一个凭证: {filename} (mode={mode}, attempt={attempt+1}/{max_retries})"
+                    )
                     # 继续循环，尝试获取下一个可用凭证
                     continue
             else:
@@ -110,13 +126,17 @@ class CredentialManager:
         await self._storage_adapter.store_credential(credential_name, credential_data)
         log.info(f"Credential added/updated: {credential_name}")
 
-    async def add_antigravity_credential(self, credential_name: str, credential_data: Dict[str, Any]):
+    async def add_antigravity_credential(
+        self, credential_name: str, credential_data: Dict[str, Any]
+    ):
         """
         新增或更新一个Antigravity凭证
         存储层会自动处理轮换顺序
         """
         await self._ensure_initialized()
-        await self._storage_adapter.store_credential(credential_name, credential_data, mode="antigravity")
+        await self._storage_adapter.store_credential(
+            credential_name, credential_data, mode="antigravity"
+        )
         log.info(f"Antigravity credential added/updated: {credential_name}")
 
     async def remove_credential(self, credential_name: str, mode: str = "geminicli") -> bool:
@@ -130,9 +150,13 @@ class CredentialManager:
             log.error(f"Error removing credential {credential_name}: {e}")
             return False
 
-    async def update_credential_state(self, credential_name: str, state_updates: Dict[str, Any], mode: str = "geminicli"):
+    async def update_credential_state(
+        self, credential_name: str, state_updates: Dict[str, Any], mode: str = "geminicli"
+    ):
         """更新凭证状态"""
-        log.debug(f"[CredMgr] update_credential_state 开始: credential_name={credential_name}, state_updates={state_updates}, mode={mode}")
+        log.debug(
+            f"[CredMgr] update_credential_state 开始: credential_name={credential_name}, state_updates={state_updates}, mode={mode}"
+        )
         log.debug(f"[CredMgr] 调用 _ensure_initialized...")
         await self._ensure_initialized()
         log.debug(f"[CredMgr] _ensure_initialized 完成")
@@ -151,10 +175,14 @@ class CredentialManager:
             log.error(f"Error updating credential state {credential_name}: {e}")
             return False
 
-    async def set_cred_disabled(self, credential_name: str, disabled: bool, mode: str = "geminicli"):
+    async def set_cred_disabled(
+        self, credential_name: str, disabled: bool, mode: str = "geminicli"
+    ):
         """设置凭证的启用/禁用状态"""
         try:
-            log.info(f"[CredMgr] set_cred_disabled 开始: credential_name={credential_name}, disabled={disabled}, mode={mode}")
+            log.info(
+                f"[CredMgr] set_cred_disabled 开始: credential_name={credential_name}, disabled={disabled}, mode={mode}"
+            )
             success = await self.update_credential_state(
                 credential_name, {"disabled": disabled}, mode=mode
             )
@@ -163,7 +191,9 @@ class CredentialManager:
                 action = "disabled" if disabled else "enabled"
                 log.info(f"Credential {action}: {credential_name} (mode={mode})")
             else:
-                log.warning(f"[CredMgr] 设置禁用状态失败: credential_name={credential_name}, disabled={disabled}")
+                log.warning(
+                    f"[CredMgr] 设置禁用状态失败: credential_name={credential_name}, disabled={disabled}"
+                )
             return success
         except Exception as e:
             log.error(f"Error setting credential disabled state {credential_name}: {e}")
@@ -190,12 +220,14 @@ class CredentialManager:
             log.error(f"Error getting credentials summary: {e}")
             return []
 
-    async def get_or_fetch_user_email(self, credential_name: str, mode: str = "geminicli") -> Optional[str]:
+    async def get_or_fetch_user_email(
+        self, credential_name: str, mode: str = "geminicli"
+    ) -> Optional[str]:
         """获取或获取用户邮箱地址"""
         try:
             # 确保已初始化
             await self._ensure_initialized()
-            
+
             # 从状态中获取缓存的邮箱
             state = await self._storage_adapter.get_credential_state(credential_name, mode=mode)
             cached_email = state.get("user_email") if state else None
@@ -222,7 +254,9 @@ class CredentialManager:
             if token_refreshed:
                 log.info(f"Token已自动刷新: {credential_name} (mode={mode})")
                 updated_data = credentials.to_dict()
-                await self._storage_adapter.store_credential(credential_name, updated_data, mode=mode)
+                await self._storage_adapter.store_credential(
+                    credential_name, updated_data, mode=mode
+                )
 
             # 获取邮箱
             email = await get_user_email(credentials)
@@ -248,7 +282,7 @@ class CredentialManager:
         cooldown_until: Optional[float] = None,
         mode: str = "geminicli",
         model_name: Optional[str] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ):
         """
         记录API调用结果
@@ -265,11 +299,12 @@ class CredentialManager:
         await self._ensure_initialized()
         try:
             if success:
-            # 条件写入：仅当凭证有错误状态或模型冷却时才写 DB，零内存缓存
-            # fire-and-forget，不阻塞请求链路
+                # 条件写入：仅当凭证有错误状态或模型冷却时才写 DB，零内存缓存
+                # fire-and-forget，不阻塞请求链路
+                cooldown_key = normalize_model_cooldown_key(mode, model_name)
                 asyncio.create_task(
                     self._storage_adapter._backend.record_success(
-                        credential_name, model_name=model_name, mode=mode
+                        credential_name, model_name=cooldown_key, mode=mode
                     )
                 )
 
@@ -288,12 +323,13 @@ class CredentialManager:
 
                 # 设置模型级冷却
                 if cooldown_until is not None and model_name:
-                    if hasattr(self._storage_adapter._backend, 'set_model_cooldown'):
+                    if hasattr(self._storage_adapter._backend, "set_model_cooldown"):
+                        cooldown_key = normalize_model_cooldown_key(mode, model_name)
                         await self._storage_adapter._backend.set_model_cooldown(
-                            credential_name, model_name, cooldown_until, mode=mode
+                            credential_name, cooldown_key, cooldown_until, mode=mode
                         )
                         log.info(
-                            f"设置模型级冷却: {credential_name}, model_name={model_name}, "
+                            f"设置模型级冷却: {credential_name}, model_name={cooldown_key}, "
                             f"冷却至: {datetime.fromtimestamp(cooldown_until, timezone.utc).isoformat()}"
                         )
 
@@ -400,7 +436,7 @@ class CredentialManager:
 
             # 尝试提取HTTP状态码（TokenError可能携带status_code属性）
             status_code = None
-            if hasattr(e, 'status_code'):
+            if hasattr(e, "status_code"):
                 status_code = e.status_code
 
             # 检查是否是凭证永久失效的错误（只有明确的400/403等才判定为永久失效）
@@ -417,7 +453,9 @@ class CredentialManager:
                 # 禁用失效凭证
                 try:
                     # 直接禁用该凭证（随机选择机制会自动跳过它）
-                    disabled_ok = await self.update_credential_state(filename, {"disabled": True}, mode=mode)
+                    disabled_ok = await self.update_credential_state(
+                        filename, {"disabled": True}, mode=mode
+                    )
                     if disabled_ok:
                         log.warning(f"永久失效凭证已禁用: {filename}")
                     else:
@@ -426,11 +464,15 @@ class CredentialManager:
                     log.error(f"禁用永久失效凭证时出错 {filename}: {e2}")
             else:
                 # 网络错误或其他临时性错误，不封禁凭证
-                log.warning(f"Token刷新失败但非永久性错误 (HTTP {status_code})，不封禁凭证: {filename}")
+                log.warning(
+                    f"Token刷新失败但非永久性错误 (HTTP {status_code})，不封禁凭证: {filename}"
+                )
 
             return None
 
-    def _is_permanent_refresh_failure(self, error_msg: str, status_code: Optional[int] = None) -> bool:
+    def _is_permanent_refresh_failure(
+        self, error_msg: str, status_code: Optional[int] = None
+    ) -> bool:
         """
         判断是否是凭证永久失效的错误
 
@@ -476,6 +518,7 @@ class CredentialManager:
         log.debug("未匹配到明确的永久失效模式，判定为临时错误")
         return False
 
+
 class _CredentialManagerSingleton:
     """单例包装器，支持懒加载和自动初始化"""
 
@@ -498,6 +541,7 @@ class _CredentialManagerSingleton:
 
     def __getattr__(self, name):
         """代理所有方法调用到真实的 CredentialManager 实例"""
+
         async def _async_wrapper(*args, **kwargs):
             manager = await self._get_or_create()
             method = getattr(manager, name)

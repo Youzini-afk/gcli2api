@@ -5,6 +5,8 @@ Base API Client - 共用的 API 客户端基础功能
 
 import asyncio
 import json
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -20,34 +22,31 @@ from config import (
 from log import log
 from src.credential_manager import CredentialManager
 
-
 # ==================== 错误检查与处理 ====================
+
 
 async def check_should_auto_ban(status_code: int) -> bool:
     """
     检查是否应该触发自动封禁
-    
+
     Args:
         status_code: HTTP状态码
-        
+
     Returns:
         bool: 是否应该触发自动封禁
     """
-    return (
-        await get_auto_ban_enabled()
-        and status_code in await get_auto_ban_error_codes()
-    )
+    return await get_auto_ban_enabled() and status_code in await get_auto_ban_error_codes()
 
 
 async def handle_auto_ban(
     credential_manager: CredentialManager,
     status_code: int,
     credential_name: str,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
 ) -> None:
     """
     处理自动封禁：直接禁用凭证
-    
+
     Args:
         credential_manager: 凭证管理器实例
         status_code: HTTP状态码
@@ -58,9 +57,7 @@ async def handle_auto_ban(
         log.warning(
             f"[{mode.upper()} AUTO_BAN] Status {status_code} triggers auto-ban for credential: {credential_name}"
         )
-        await credential_manager.set_cred_disabled(
-            credential_name, True, mode=mode
-        )
+        await credential_manager.set_cred_disabled(credential_name, True, mode=mode)
 
 
 async def handle_error_with_retry(
@@ -71,7 +68,7 @@ async def handle_error_with_retry(
     attempt: int,
     max_retries: int,
     retry_interval: float,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
 ) -> bool:
     """
     统一处理错误和重试逻辑
@@ -91,10 +88,22 @@ async def handle_error_with_retry(
         max_retries: 最大重试次数
         retry_interval: 重试间隔
         mode: 模式（geminicli 或 antigravity）
-        
+
     Returns:
         bool: True表示需要继续重试，False表示不需要重试
     """
+    # Antigravity 的 401/403 是凭证级错误；record_api_call_error 已停用
+    # 当前凭证，这里只负责让同一次外部请求切换到下一个凭证。
+    if mode == "antigravity" and status_code in (401, 403):
+        if retry_enabled and attempt < max_retries:
+            log.info(
+                f"[{mode.upper()} RETRY] Switching credential after fatal "
+                f"status {status_code} (attempt {attempt + 1}/{max_retries})"
+            )
+            await asyncio.sleep(retry_interval)
+            return True
+        return False
+
     # 优先检查自动封禁
     should_auto_ban = await check_should_auto_ban(status_code)
 
@@ -127,10 +136,11 @@ async def handle_error_with_retry(
 
 # ==================== 重试配置获取 ====================
 
+
 async def get_retry_config() -> Dict[str, Any]:
     """
     获取重试配置
-    
+
     Returns:
         包含重试配置的字典
     """
@@ -143,15 +153,16 @@ async def get_retry_config() -> Dict[str, Any]:
 
 # ==================== API调用结果记录 ====================
 
+
 async def record_api_call_success(
     credential_manager: CredentialManager,
     credential_name: str,
     mode: str = "geminicli",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
 ) -> None:
     """
     记录API调用成功
-    
+
     Args:
         credential_manager: 凭证管理器实例
         credential_name: 凭证名称
@@ -166,9 +177,7 @@ async def record_api_call_success(
             try:
                 from src.quota_refresh import quota_refresh_service
 
-                await quota_refresh_service.maybe_schedule(
-                    credential_name, success=True
-                )
+                await quota_refresh_service.maybe_schedule(credential_name, success=True)
             except Exception as refresh_error:
                 log.debug(f"请求触发额度刷新检查失败: {refresh_error}")
 
@@ -180,7 +189,7 @@ async def record_api_call_error(
     cooldown_until: Optional[float] = None,
     mode: str = "geminicli",
     model_name: Optional[str] = None,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
 ) -> None:
     """
     记录API调用错误
@@ -202,8 +211,10 @@ async def record_api_call_error(
             cooldown_until=cooldown_until,
             mode=mode,
             model_name=model_name,
-            error_message=error_message
+            error_message=error_message,
         )
+        if mode == "antigravity" and status_code in (401, 403):
+            await credential_manager.set_cred_disabled(credential_name, True, mode=mode)
         if mode == "antigravity":
             try:
                 from src.quota_refresh import quota_refresh_service
@@ -219,10 +230,8 @@ async def record_api_call_error(
 
 # ==================== 429错误处理 ====================
 
-async def parse_and_log_cooldown(
-    error_text: str,
-    mode: str = "geminicli"
-) -> Optional[float]:
+
+async def parse_and_log_cooldown(error_text: str, mode: str = "geminicli") -> Optional[float]:
     """
     解析并记录冷却时间
 
@@ -249,6 +258,7 @@ async def parse_and_log_cooldown(
 
 # ==================== 流式响应收集 ====================
 
+
 async def collect_streaming_response(stream_generator) -> Response:
     """
     将Gemini流式响应收集为一条完整的非流式响应
@@ -267,20 +277,19 @@ async def collect_streaming_response(stream_generator) -> Response:
     # 初始化响应结构
     merged_response = {
         "response": {
-            "candidates": [{
-                "content": {
-                    "parts": [],
-                    "role": "model"
-                },
-                "finishReason": None,
-                "safetyRatings": [],
-                "citationMetadata": None
-            }],
+            "candidates": [
+                {
+                    "content": {"parts": [], "role": "model"},
+                    "finishReason": None,
+                    "safetyRatings": [],
+                    "citationMetadata": None,
+                }
+            ],
             "usageMetadata": {
                 "promptTokenCount": 0,
                 "candidatesTokenCount": 0,
-                "totalTokenCount": 0
-            }
+                "totalTokenCount": 0,
+            },
         }
     }
 
@@ -304,18 +313,24 @@ async def collect_streaming_response(stream_generator) -> Response:
 
             # 处理 bytes 类型
             if isinstance(line, bytes):
-                line_str = line.decode('utf-8', errors='ignore')
-                log.debug(f"[STREAM COLLECTOR] Processing bytes line {line_count}: {line_str[:200] if line_str else 'empty'}")
+                line_str = line.decode("utf-8", errors="ignore")
+                log.debug(
+                    f"[STREAM COLLECTOR] Processing bytes line {line_count}: {line_str[:200] if line_str else 'empty'}"
+                )
             elif isinstance(line, str):
                 line_str = line
-                log.debug(f"[STREAM COLLECTOR] Processing line {line_count}: {line_str[:200] if line_str else 'empty'}")
+                log.debug(
+                    f"[STREAM COLLECTOR] Processing line {line_count}: {line_str[:200] if line_str else 'empty'}"
+                )
             else:
                 log.debug(f"[STREAM COLLECTOR] Skipping non-string/bytes line: {type(line)}")
                 continue
 
             # 解析流式数据行
             if not line_str.startswith("data: "):
-                log.debug(f"[STREAM COLLECTOR] Skipping line without 'data: ' prefix: {line_str[:100]}")
+                log.debug(
+                    f"[STREAM COLLECTOR] Skipping line without 'data: ' prefix: {line_str[:100]}"
+                )
                 continue
 
             raw = line_str[6:].strip()
@@ -327,7 +342,9 @@ async def collect_streaming_response(stream_generator) -> Response:
                 log.debug(f"[STREAM COLLECTOR] Parsing JSON: {raw[:200]}")
                 chunk = json.loads(raw)
                 has_data = True
-                log.debug(f"[STREAM COLLECTOR] Chunk keys: {chunk.keys() if isinstance(chunk, dict) else type(chunk)}")
+                log.debug(
+                    f"[STREAM COLLECTOR] Chunk keys: {chunk.keys() if isinstance(chunk, dict) else type(chunk)}"
+                )
 
                 # 提取响应对象
                 response_obj = chunk.get("response", {})
@@ -338,7 +355,9 @@ async def collect_streaming_response(stream_generator) -> Response:
                 candidates = response_obj.get("candidates", [])
                 log.debug(f"[STREAM COLLECTOR] Found {len(candidates)} candidates")
                 if not candidates:
-                    log.debug(f"[STREAM COLLECTOR] No candidates in chunk, chunk structure: {list(chunk.keys()) if isinstance(chunk, dict) else type(chunk)}")
+                    log.debug(
+                        f"[STREAM COLLECTOR] No candidates in chunk, chunk structure: {list(chunk.keys()) if isinstance(chunk, dict) else type(chunk)}"
+                    )
                     continue
 
                 candidate = candidates[0]
@@ -354,7 +373,11 @@ async def collect_streaming_response(stream_generator) -> Response:
 
                     # 优先保留工具调用相关 part（functionCall / functionResponse）
                     # 避免在 stream2nostream 模式下工具调用丢失
-                    if "functionCall" in part or "functionResponse" in part or "function_call" in part:
+                    if (
+                        "functionCall" in part
+                        or "functionResponse" in part
+                        or "function_call" in part
+                    ):
                         collected_other_parts.append(part)
                         collected_tool_parts_count += 1
                         log.debug(f"[STREAM COLLECTOR] Collected tool part: {list(part.keys())}")
@@ -371,19 +394,32 @@ async def collect_streaming_response(stream_generator) -> Response:
                             collected_text.append(text)
                             log.debug(f"[STREAM COLLECTOR] Collected regular text: {text[:100]}")
                     # 处理非文本内容（图片、文件等）
-                    elif "inlineData" in part or "fileData" in part or "executableCode" in part or "codeExecutionResult" in part:
+                    elif (
+                        "inlineData" in part
+                        or "fileData" in part
+                        or "executableCode" in part
+                        or "codeExecutionResult" in part
+                    ):
                         collected_other_parts.append(part)
-                        log.debug(f"[STREAM COLLECTOR] Collected non-text part: {list(part.keys())}")
+                        log.debug(
+                            f"[STREAM COLLECTOR] Collected non-text part: {list(part.keys())}"
+                        )
 
                 # 收集其他信息（使用最后一个块的值）
                 if candidate.get("finishReason"):
-                    merged_response["response"]["candidates"][0]["finishReason"] = candidate["finishReason"]
+                    merged_response["response"]["candidates"][0]["finishReason"] = candidate[
+                        "finishReason"
+                    ]
 
                 if candidate.get("safetyRatings"):
-                    merged_response["response"]["candidates"][0]["safetyRatings"] = candidate["safetyRatings"]
+                    merged_response["response"]["candidates"][0]["safetyRatings"] = candidate[
+                        "safetyRatings"
+                    ]
 
                 if candidate.get("citationMetadata"):
-                    merged_response["response"]["candidates"][0]["citationMetadata"] = candidate["citationMetadata"]
+                    merged_response["response"]["candidates"][0]["citationMetadata"] = candidate[
+                        "citationMetadata"
+                    ]
 
                 # 更新使用元数据
                 usage = response_obj.get("usageMetadata", {})
@@ -402,10 +438,12 @@ async def collect_streaming_response(stream_generator) -> Response:
         return Response(
             content=json.dumps({"error": f"收集流式响应失败: {str(e)}"}),
             status_code=500,
-            media_type="application/json"
+            media_type="application/json",
         )
 
-    log.debug(f"[STREAM COLLECTOR] Finished iteration, has_data={has_data}, line_count={line_count}")
+    log.debug(
+        f"[STREAM COLLECTOR] Finished iteration, has_data={has_data}, line_count={line_count}"
+    )
 
     # 如果没有收集到任何数据，返回错误
     if not has_data:
@@ -413,7 +451,7 @@ async def collect_streaming_response(stream_generator) -> Response:
         return Response(
             content=json.dumps({"error": "No data collected from stream"}),
             status_code=500,
-            media_type="application/json"
+            media_type="application/json",
         )
 
     # 组装最终的parts
@@ -421,16 +459,11 @@ async def collect_streaming_response(stream_generator) -> Response:
 
     # 先添加思维链内容（如果有）
     if collected_thought_text:
-        final_parts.append({
-            "text": "".join(collected_thought_text),
-            "thought": True
-        })
+        final_parts.append({"text": "".join(collected_thought_text), "thought": True})
 
     # 再添加普通文本内容
     if collected_text:
-        final_parts.append({
-            "text": "".join(collected_text)
-        })
+        final_parts.append({"text": "".join(collected_text)})
 
     # 添加其他类型的parts（图片、文件等）
     final_parts.extend(collected_other_parts)
@@ -454,14 +487,91 @@ async def collect_streaming_response(stream_generator) -> Response:
 
     # 返回纯JSON格式
     return Response(
-        content=json.dumps(merged_response, ensure_ascii=False).encode('utf-8'),
+        content=json.dumps(merged_response, ensure_ascii=False).encode("utf-8"),
         status_code=200,
         headers={},
-        media_type="application/json"
+        media_type="application/json",
     )
 
 
 RESOURCE_EXHAUSTED_COOLDOWN_HOURS = 4  # RESOURCE_EXHAUSTED 错误的默认冷却时间（小时）
+
+_DURATION_PATTERN = re.compile(
+    r"^\s*(?:(?P<days>\d+(?:\.\d+)?)d)?"
+    r"(?:(?P<hours>\d+(?:\.\d+)?)h)?"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)m)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)s)?\s*$"
+)
+_DURATION_KEYS = {
+    "retryDelay",
+    "quotaResetDelay",
+    "retryAfter",
+    "retry_after",
+    "delay",
+}
+_TIMESTAMP_KEYS = {
+    "quotaResetTimeStamp",
+    "quotaResetTimestamp",
+    "resetTime",
+    "resetTimestamp",
+    "retryAt",
+}
+
+
+def _parse_retry_duration_seconds(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    if not isinstance(value, str):
+        return None
+    match = _DURATION_PATTERN.fullmatch(value)
+    if not match or not any(match.groupdict().values()):
+        return None
+    multipliers = {
+        "days": 86400,
+        "hours": 3600,
+        "minutes": 60,
+        "seconds": 1,
+    }
+    return sum(
+        float(match.group(name) or 0) * multiplier for name, multiplier in multipliers.items()
+    )
+
+
+def _parse_retry_timestamp(value: Any) -> Optional[float]:
+    try:
+        if isinstance(value, (int, float)):
+            timestamp = float(value)
+            return timestamp / 1000 if timestamp > 1e12 else timestamp
+        if not isinstance(value, str) or not value.strip():
+            return None
+        normalized = value.strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _collect_retry_hints(
+    value: Any,
+    timestamps: list[float],
+    delays: list[float],
+) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in _TIMESTAMP_KEYS:
+                timestamp = _parse_retry_timestamp(nested)
+                if timestamp is not None:
+                    timestamps.append(timestamp)
+            if key in _DURATION_KEYS:
+                delay = _parse_retry_duration_seconds(nested)
+                if delay is not None:
+                    delays.append(delay)
+            _collect_retry_hints(nested, timestamps, delays)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_retry_hints(nested, timestamps, delays)
 
 
 def parse_quota_reset_timestamp(error_response: dict, mode: str = "geminicli") -> Optional[float]:
@@ -495,32 +605,25 @@ def parse_quota_reset_timestamp(error_response: dict, mode: str = "geminicli") -
     """
     try:
         error_obj = error_response.get("error", {})
-
-        if mode.lower() == "antigravity" and error_obj.get("status") == "RESOURCE_EXHAUSTED":
+        if not isinstance(error_obj, dict):
             return None
 
-        details = error_obj.get("details", [])
-
-        for detail in details:
-            if detail.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo":
-                reset_timestamp_str = detail.get("metadata", {}).get("quotaResetTimeStamp")
-
-                if reset_timestamp_str:
-                    if reset_timestamp_str.endswith("Z"):
-                        reset_timestamp_str = reset_timestamp_str.replace("Z", "+00:00")
-
-                    reset_dt = datetime.fromisoformat(reset_timestamp_str)
-                    if reset_dt.tzinfo is None:
-                        reset_dt = reset_dt.replace(tzinfo=timezone.utc)
-
-                    return reset_dt.astimezone(timezone.utc).timestamp()
+        now = time.time()
+        timestamps: list[float] = []
+        delays: list[float] = []
+        _collect_retry_hints(error_obj, timestamps, delays)
+        candidates = [timestamp for timestamp in timestamps if timestamp > now]
+        candidates.extend(now + delay for delay in delays if delay > 0)
+        if candidates:
+            # Prefer the most conservative explicit hint so the account is not
+            # selected again before either quota or retry window has recovered.
+            return max(candidates)
 
         # 如果是 RESOURCE_EXHAUSTED 错误且消息完全匹配，设置默认4小时冷却时间
         if (
             error_obj.get("status") == "RESOURCE_EXHAUSTED"
             and error_obj.get("message") == "Resource has been exhausted (e.g. check quota)."
         ):
-            import time
             cooldown_until = time.time() + RESOURCE_EXHAUSTED_COOLDOWN_HOURS * 3600
             return cooldown_until
 

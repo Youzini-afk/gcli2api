@@ -25,6 +25,11 @@ from src.api.antigravity import (
     build_antigravity_headers,
     wrap_cli_request,
 )
+from src.api.utils import (
+    parse_and_log_cooldown,
+    parse_quota_reset_timestamp,
+    record_api_call_error,
+)
 from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from config import get_code_assist_endpoint, get_antigravity_api_url
 from .utils import validate_mode
@@ -1524,13 +1529,23 @@ async def test_credential(
 
             if gemini_remaining is not None and gemini_remaining <= 0:
                 message = f"Gemini 额度已耗尽（{test_model}：0%）"
-                await storage_adapter.update_credential_state(
-                    filename,
+                model_quota = quota_info.get("models", {}).get(test_model, {})
+                cooldown_until = parse_quota_reset_timestamp(
                     {
-                        "error_codes": [429],
-                        "error_messages": {"429": message},
+                        "error": {
+                            "quotaResetTimeStamp": model_quota.get("resetTimeRaw")
+                        }
                     },
                     mode=mode,
+                )
+                await record_api_call_error(
+                    credential_manager,
+                    filename,
+                    429,
+                    cooldown_until,
+                    mode=mode,
+                    model_name=test_model,
+                    error_message=message,
                 )
                 return JSONResponse(
                     status_code=429,
@@ -1581,7 +1596,8 @@ async def test_credential(
             if status_code == 200:
                 await storage_adapter.update_credential_state(filename, {
                     "error_codes": [],
-                    "error_messages": {}
+                    "error_messages": {},
+                    "disabled": False,
                 }, mode=mode)
 
                 # 如果是 geminicli 模式且第一次测试成功，继续测试 gemini-3-flash-preview
@@ -1649,15 +1665,20 @@ async def test_credential(
                 # 打印详细错误内容到日志
                 log.error(f"凭证测试错误详情 - 文件: {filename}, 模式: {mode}, 状态码: {status_code}, 错误内容: {error_text}")
 
-                # 使用覆盖模式保存错误（与 credential_manager 保持一致）
-                error_codes = [status_code]
-                error_messages = {str(status_code): error_text if error_text else f"HTTP {status_code}"}
-
-                # 更新状态
-                await storage_adapter.update_credential_state(filename, {
-                    "error_codes": error_codes,
-                    "error_messages": error_messages
-                }, mode=mode)
+                cooldown_until = None
+                if mode == "antigravity" and status_code in (429, 503) and error_text:
+                    cooldown_until = await parse_and_log_cooldown(
+                        error_text, mode=mode
+                    )
+                await record_api_call_error(
+                    credential_manager,
+                    filename,
+                    status_code,
+                    cooldown_until,
+                    mode=mode,
+                    model_name=test_model,
+                    error_message=error_text or f"HTTP {status_code}",
+                )
 
                 log.info(f"已保存测试错误信息: {filename} - 错误码 {status_code}")
             except Exception as e:
