@@ -60,7 +60,8 @@ async function api(path, options = {}) {
         headers.set('Content-Type', 'application/json');
     }
     const response = await fetch(path, { ...options, headers });
-    if (response.status === 401 || response.status === 403) {
+    const panelAuthFailed = response.headers.get('x-panel-auth-failed') === '1';
+    if (panelAuthFailed && (response.status === 401 || response.status === 403)) {
         if (!path.includes('/auth/login')) logout(false);
     }
     const contentType = response.headers.get('content-type') || '';

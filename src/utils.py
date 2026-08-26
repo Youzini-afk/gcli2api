@@ -5,8 +5,10 @@ from fastapi import Depends, HTTPException, Header, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from log import log
 
-# HTTP Bearer security scheme
-security = HTTPBearer()
+# HTTP Bearer security scheme. Panel auth handles missing credentials itself so
+# its failures can carry an explicit marker for the browser.
+security = HTTPBearer(auto_error=False)
+PANEL_AUTH_FAILURE_HEADER = "X-Panel-Auth-Failed"
 
 # ====================== OAuth Configuration ======================
 
@@ -267,7 +269,9 @@ authenticate_gemini_flexible = authenticate_flexible
 
 # ====================== Panel Authentication Functions ======================
 
-async def verify_panel_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+async def verify_panel_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> str:
     """
     简化的控制面板密码验证函数
 
@@ -284,6 +288,10 @@ async def verify_panel_token(credentials: HTTPAuthorizationCredentials = Depends
     """
 
     password = await get_panel_password()
-    if credentials.credentials != password:
-        raise HTTPException(status_code=401, detail="密码错误")
+    if credentials is None or credentials.credentials != password:
+        raise HTTPException(
+            status_code=401,
+            detail="密码错误",
+            headers={PANEL_AUTH_FAILURE_HEADER: "1"},
+        )
     return credentials.credentials
