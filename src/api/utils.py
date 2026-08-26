@@ -92,12 +92,12 @@ async def handle_error_with_retry(
     Returns:
         bool: True表示需要继续重试，False表示不需要重试
     """
-    # Antigravity 的 401/403 是凭证级错误；record_api_call_error 已停用
-    # 当前凭证，这里只负责让同一次外部请求切换到下一个凭证。
-    if mode == "antigravity" and status_code in (401, 403):
+    # Antigravity 的 400 可能是上游临时错误，只在当前请求换号；
+    # 401/403 是凭证级错误，record_api_call_error 已停用当前凭证。
+    if mode == "antigravity" and status_code in (400, 401, 403):
         if retry_enabled and attempt < max_retries:
             log.info(
-                f"[{mode.upper()} RETRY] Switching credential after fatal "
+                f"[{mode.upper()} RETRY] Switching credential after upstream "
                 f"status {status_code} (attempt {attempt + 1}/{max_retries})"
             )
             await asyncio.sleep(retry_interval)

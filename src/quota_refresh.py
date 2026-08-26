@@ -42,6 +42,33 @@ def summarize_quota_pool(
     return remaining, reset_at
 
 
+async def reconcile_healthy_pool_cooldowns(
+    storage: Any, filename: str, models: dict[str, Any]
+) -> list[str]:
+    """Clear stale pool cooldowns when refreshed quota proves the pool is healthy."""
+    from src.credential_manager import (
+        ANTIGRAVITY_CLAUDE_POOL_KEY,
+        ANTIGRAVITY_GEMINI_POOL_KEY,
+    )
+
+    state = await storage.get_credential_state(filename, mode="antigravity")
+    cooldowns = state.get("model_cooldowns", {})
+    if not isinstance(cooldowns, dict) or not cooldowns:
+        return []
+    cleared: list[str] = []
+    for representative, pool_key in (
+        ("gemini", ANTIGRAVITY_GEMINI_POOL_KEY),
+        ("claude", ANTIGRAVITY_CLAUDE_POOL_KEY),
+    ):
+        remaining, _ = summarize_quota_pool(models, representative)
+        if pool_key in cooldowns and remaining is not None and remaining > QUOTA_COOLDOWN_THRESHOLD:
+            await storage._backend.set_model_cooldown(filename, pool_key, None, mode="antigravity")
+            cleared.append(pool_key)
+    if cleared:
+        log.info(f"额度已恢复，清除 Antigravity 旧冷却: {filename}, pools={cleared}")
+    return cleared
+
+
 class QuotaRefreshService:
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task] = {}
@@ -154,6 +181,43 @@ class QuotaRefreshService:
             "error": None,
         }
 
+    async def recover_one_healthy_cooldown(
+        self,
+        model_name: str,
+        exclude_filenames: set[str] | None = None,
+    ) -> bool:
+        """Recheck cooled credentials on demand and recover the first healthy one."""
+        from src.credential_manager import normalize_model_cooldown_key
+
+        storage = await get_storage_adapter()
+        pool_key = normalize_model_cooldown_key("antigravity", model_name)
+        excluded = exclude_filenames or set()
+        filenames = sorted(await storage.list_credentials(mode="antigravity"))
+        now = time.time()
+        for filename in filenames:
+            if filename in excluded:
+                continue
+            state = await storage.get_credential_state(filename, mode="antigravity")
+            if state.get("disabled"):
+                continue
+            cooldowns = state.get("model_cooldowns", {})
+            cooldown_until = cooldowns.get(pool_key) if isinstance(cooldowns, dict) else None
+            if not isinstance(cooldown_until, (int, float)) or cooldown_until <= now:
+                continue
+            try:
+                quota = await self.refresh_now(filename)
+            except Exception as error:
+                log.debug(f"恢复冷却检查失败 {filename}: {error}")
+                continue
+            remaining, _ = summarize_quota_pool(quota.get("models", {}), model_name)
+            if remaining is not None and remaining > QUOTA_COOLDOWN_THRESHOLD:
+                log.info(
+                    f"按请求恢复 Antigravity 凭证: {filename}, "
+                    f"pool={pool_key}, remaining={remaining * 100:.1f}%"
+                )
+                return True
+        return False
+
     def _start_task(self, filename: str) -> asyncio.Task:
         self._last_attempt[filename] = time.time()
         task = asyncio.create_task(self._refresh(filename), name=f"quota-refresh:{filename}")
@@ -203,6 +267,7 @@ class QuotaRefreshService:
 
         updated_at = checked_at
         models = quota_info.get("models", {})
+        await reconcile_healthy_pool_cooldowns(storage, filename, models)
         await storage.update_credential_state(
             filename,
             {

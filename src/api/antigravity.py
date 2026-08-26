@@ -190,7 +190,7 @@ def build_antigravity_headers(
 
 def _is_retryable_status(status_code: int, disable_error_codes: List[int]) -> bool:
     """统一判断是否属于可重试状态码。"""
-    return status_code in (401, 403, 429, 503) or status_code in disable_error_codes
+    return status_code in (400, 401, 403, 429, 503) or status_code in disable_error_codes
 
 
 async def get_confirmed_429_cooldown(

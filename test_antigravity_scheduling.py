@@ -13,7 +13,7 @@ from src.credential_manager import (
     CredentialManager,
     normalize_model_cooldown_key,
 )
-from src.quota_refresh import summarize_quota_pool
+from src.quota_refresh import reconcile_healthy_pool_cooldowns, summarize_quota_pool
 from src.storage.sqlite_manager import SQLiteManager
 
 
@@ -99,7 +99,9 @@ def test_quota_confirmation_uses_the_requested_shared_pool():
 
 
 @pytest.mark.asyncio
-async def test_credential_manager_selects_and_records_by_antigravity_pool():
+async def test_credential_manager_selects_and_records_by_antigravity_pool(
+    monkeypatch,
+):
     calls = []
 
     class FakeBackend:
@@ -122,6 +124,15 @@ async def test_credential_manager_selects_and_records_by_antigravity_pool():
     manager._initialized = True
     manager._storage_adapter = FakeStorage()
 
+    async def no_recovery(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        quota_refresh_module.quota_refresh_service,
+        "recover_one_healthy_cooldown",
+        no_recovery,
+    )
+
     assert (
         await manager.get_valid_credential(mode="antigravity", model_name="gemini-3-pro-high")
         is None
@@ -143,6 +154,83 @@ async def test_credential_manager_selects_and_records_by_antigravity_pool():
         2_000_000_000.0,
         "antigravity",
     ) in calls
+
+
+@pytest.mark.asyncio
+async def test_healthy_quota_clears_stale_pool_cooldown():
+    cleared = []
+
+    class FakeBackend:
+        async def set_model_cooldown(self, filename, model_name, cooldown_until, *, mode):
+            cleared.append((filename, model_name, cooldown_until, mode))
+
+    class FakeStorage:
+        _backend = FakeBackend()
+
+        async def get_credential_state(self, _filename, *, mode):
+            assert mode == "antigravity"
+            return {
+                "model_cooldowns": {
+                    ANTIGRAVITY_GEMINI_POOL_KEY: 2_000_000_000.0,
+                }
+            }
+
+    await reconcile_healthy_pool_cooldowns(
+        FakeStorage(),
+        "account.json",
+        {"gemini-3.7-flash-low": {"remaining": 0.82}},
+    )
+
+    assert cleared == [
+        (
+            "account.json",
+            ANTIGRAVITY_GEMINI_POOL_KEY,
+            None,
+            "antigravity",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_available_pool_rechecks_cooldown_then_selects_recovered_account(
+    monkeypatch,
+):
+    selections = 0
+
+    class FakeBackend:
+        async def get_next_available_credential(self, **_kwargs):
+            nonlocal selections
+            selections += 1
+            if selections == 1:
+                return None
+            return "recovered.json", {
+                "access_token": "token",
+                "project_id": "project",
+                "expiry": "2030-01-01T00:00:00+00:00",
+            }
+
+    class FakeStorage:
+        _backend = FakeBackend()
+
+    async def recover(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(
+        quota_refresh_module.quota_refresh_service,
+        "recover_one_healthy_cooldown",
+        recover,
+    )
+    manager = CredentialManager()
+    manager._initialized = True
+    manager._storage_adapter = FakeStorage()
+
+    selected = await manager.get_valid_credential(
+        mode="antigravity", model_name="gemini-3.7-flash-low"
+    )
+
+    assert selected is not None
+    assert selected[0] == "recovered.json"
+    assert selections == 2
 
 
 @pytest.mark.asyncio
@@ -169,7 +257,7 @@ async def test_sqlite_retry_excludes_credentials_already_attempted(monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("first_status", [403, 429])
+@pytest.mark.parametrize("first_status", [400, 403, 429])
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_retry_records_unavailable_credential_before_selecting_next(
     monkeypatch, first_status, streaming

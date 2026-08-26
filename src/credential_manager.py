@@ -92,6 +92,15 @@ class CredentialManager:
 
             # 如果没有可用凭证，直接返回None
             if not result:
+                if attempt == 0 and mode == "antigravity" and model_name:
+                    from src.quota_refresh import quota_refresh_service
+
+                    recovered = await quota_refresh_service.recover_one_healthy_cooldown(
+                        model_name,
+                        exclude_filenames=exclude_filenames,
+                    )
+                    if recovered:
+                        continue
                 if attempt == 0:
                     log.warning(f"没有可用凭证 (mode={mode}, model_name={model_name})")
                 return None
