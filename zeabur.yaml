@@ -26,12 +26,13 @@ spec:
     部署后请访问您的域名进行配置。
   services:
     - name: gcli2api
-      template: PREBUILT
+      template: GIT
+      domainKey: DOMAIN
       spec:
-        id: gcli2api
-        name: gcli2api
         source:
-          image: ghcr.io/su-kaka/gcli2api:latest
+          source: GITHUB
+          repo: 1346064576
+          branch: master
         ports:
           - id: web
             port: 7861
