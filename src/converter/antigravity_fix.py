@@ -693,6 +693,7 @@ def _normalize_antigravity_request(
 
 async def normalize_antigravity_request(
     request: Dict[str, Any],
+    preserve_trailing_model: bool = False,
 ) -> Dict[str, Any]:
     """
     规范化 Antigravity 请求
@@ -738,7 +739,9 @@ async def normalize_antigravity_request(
         "gemini-3.6-flash",
         "gemini-3.7-flash",
     ]
-    if any(keyword in model.lower() for keyword in no_prefill_models):
+    if not preserve_trailing_model and any(
+        keyword in model.lower() for keyword in no_prefill_models
+    ):
         contents = result.get("contents", [])
         removed_count = 0
         while contents and isinstance(contents[-1], dict) and contents[-1].get("role") == "model":

@@ -23,6 +23,11 @@ from src.credential_manager import credential_manager
 from src.httpx_client import stream_post_async, post_async
 from src.models import Model, model_to_dict
 from src.utils import ANTIGRAVITY_USER_AGENT
+from src.converter.tool_anti_truncation import (
+    prepare_tool_anti_truncation_request,
+    transform_non_stream_response,
+    transform_stream_item,
+)
 
 # 导入共同的基础功能
 from src.api.utils import (
@@ -272,6 +277,7 @@ async def stream_request(
     Yields:
         Response对象（错误时）或 bytes流/str流（成功时）
     """
+    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
     model_name = body.get("model", "")
 
     # 1. 获取有效凭证
@@ -474,7 +480,7 @@ async def stream_request(
                     else:
                         log.debug(f"[ANTIGRAVITY STREAM RAW] chunk(str): {chunk}")
 
-                    yield chunk
+                    yield transform_stream_item(chunk, tool_anti_context)
 
             # 流式请求完成，检查结果
             if success_recorded:
@@ -593,6 +599,7 @@ async def non_stream_request(
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
 
+    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
     model_name = body.get("model", "")
 
     # 1. 获取有效凭证
@@ -714,8 +721,16 @@ async def non_stream_request(
                     await record_api_call_success(
                         credential_manager, current_file, mode="antigravity", model_name=model_name
                     )
+                    response_headers = dict(response.headers)
+                    if tool_anti_context is not None:
+                        response_headers.pop("content-length", None)
+                        response_headers.pop("content-encoding", None)
                     return Response(
-                        content=response.content, status_code=200, headers=dict(response.headers)
+                        content=transform_non_stream_response(
+                            response.content, tool_anti_context
+                        ),
+                        status_code=200,
+                        headers=response_headers,
                     )
 
             # 失败 - 记录最后一次错误

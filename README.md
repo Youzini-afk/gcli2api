@@ -297,6 +297,10 @@ ghcr.io/youzini-afk/gcli2api:latest
 - **流式抗截断模式**：在模型名称前添加 `流式抗截断/` 前缀
   - 例：`流式抗截断/gemini-2.5-pro`  
   - 自动检测响应截断并重试，确保完整回答
+- **工具抗截断模式**：在模型名称前添加 `工具抗截断/` 前缀
+  - 例：`工具抗截断/gemini-3.7-flash-low`
+  - 通过一次性合成工具承载完整正文，支持流式与非流式
+  - 保留客户端真实工具调用；强制指定真实 `tool_choice` 时透明回退
 
 ### 🔧 模型功能自动检测
 - 系统自动识别模型名称中的功能标识
@@ -848,6 +852,17 @@ for part in response.candidates[0].content.parts:
 ```json
 {
   "model": "流式抗截断/gemini-2.5-pro",
+  "messages": [
+    {"role": "user", "content": "写一篇长文章"}
+  ],
+  "stream": true
+}
+```
+
+**工具抗截断使用（流式和非流式均可）**
+```json
+{
+  "model": "工具抗截断/gemini-3.7-flash-low",
   "messages": [
     {"role": "user", "content": "写一篇长文章"}
   ],

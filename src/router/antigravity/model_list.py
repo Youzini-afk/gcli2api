@@ -65,6 +65,9 @@ async def get_antigravity_models_with_features():
         
         # 流式抗截断模型 (仅在流式传输时有效，前缀格式)
         models.append(f"流式抗截断/{base_model}")
+
+        # 合成工具抗截断模型（支持流式与非流式）
+        models.append(f"工具抗截断/{base_model}")
     
     log.info(f"[ANTIGRAVITY MODEL LIST] 生成了 {len(models)} 个模型（包含功能前缀）")
     return models

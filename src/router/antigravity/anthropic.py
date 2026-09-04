@@ -27,6 +27,7 @@ from log import log
 from src.utils import (
     get_base_model_from_feature_model,
     is_anti_truncation_model,
+    is_tool_anti_truncation_model,
     is_fake_streaming_model,
     authenticate_bearer,
 )
@@ -88,6 +89,7 @@ async def messages(
     # 处理模型名称和功能检测
     use_fake_streaming = is_fake_streaming_model(claude_request.model)
     use_anti_truncation = is_anti_truncation_model(claude_request.model)
+    use_tool_anti_truncation = is_tool_anti_truncation_model(claude_request.model)
     real_model = get_base_model_from_feature_model(claude_request.model)
 
     # 获取流式标志
@@ -109,13 +111,20 @@ async def messages(
 
     # 规范化 Gemini 请求 (使用 antigravity 模式)
     from src.converter.antigravity_fix import normalize_antigravity_request
-    gemini_dict = await normalize_antigravity_request(gemini_dict)
+    gemini_dict = await normalize_antigravity_request(
+        gemini_dict,
+        preserve_trailing_model=use_tool_anti_truncation,
+    )
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
+    if use_tool_anti_truncation:
+        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
 
     # ========== 非流式请求 ==========
     if not is_streaming:

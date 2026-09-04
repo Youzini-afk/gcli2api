@@ -33,6 +33,11 @@ from src.api.utils import (
     parse_and_log_cooldown,
 )
 from src.utils import get_geminicli_user_agent
+from src.converter.tool_anti_truncation import (
+    prepare_tool_anti_truncation_request,
+    transform_non_stream_response,
+    transform_stream_item,
+)
 
 # ==================== 全局凭证管理器 ====================
 
@@ -132,6 +137,7 @@ async def stream_request(
     Yields:
         Response对象（错误时）或 bytes流/str流（成功时）
     """
+    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -335,7 +341,7 @@ async def stream_request(
                         success_recorded = True
                         log.debug(f"[GEMINICLI STREAM] 开始接收流式响应，模型: {model_name}")
 
-                    yield chunk
+                    yield transform_stream_item(chunk, tool_anti_context)
 
             # 流式请求完成，检查结果
             if success_recorded:
@@ -423,6 +429,7 @@ async def non_stream_request(
     Returns:
         Response对象
     """
+    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -524,7 +531,9 @@ async def non_stream_request(
                 response_headers.pop('content-length', None)
 
                 return Response(
-                    content=response.content,
+                    content=transform_non_stream_response(
+                        response.content, tool_anti_context
+                    ),
                     status_code=200,
                     headers=response_headers
                 )

@@ -27,6 +27,7 @@ from log import log
 from src.utils import (
     get_base_model_from_feature_model,
     is_anti_truncation_model,
+    is_tool_anti_truncation_model,
     is_fake_streaming_model,
     authenticate_bearer,
 )
@@ -85,6 +86,7 @@ async def chat_completions(
     # 处理模型名称和功能检测
     use_fake_streaming = is_fake_streaming_model(openai_request.model)
     use_anti_truncation = is_anti_truncation_model(openai_request.model)
+    use_tool_anti_truncation = is_tool_anti_truncation_model(openai_request.model)
     real_model = get_base_model_from_feature_model(openai_request.model)
 
     # 获取流式标志
@@ -113,6 +115,10 @@ async def chat_completions(
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
+    if use_tool_anti_truncation:
+        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
 
     # ========== 非流式请求 ==========
     if not is_streaming:

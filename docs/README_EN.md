@@ -288,6 +288,10 @@ All models have 1M context window capacity. Each credential file provides 1000 r
 - **Streaming Anti-truncation Mode**: Add `流式抗截断/` prefix to model name
   - Example: `流式抗截断/gemini-2.5-pro`
   - Automatically detects response truncation and retries to ensure complete answers
+- **Synthetic Tool Anti-truncation Mode**: Add `工具抗截断/` prefix to the model name
+  - Example: `工具抗截断/gemini-3.7-flash-low`
+  - Carries the complete answer through a one-time synthetic tool in streaming or non-streaming mode
+  - Preserves genuine client tool calls and transparently falls back for forced `tool_choice`
 
 ### 🔧 Automatic Model Feature Detection
 - System automatically recognizes feature identifiers in model names

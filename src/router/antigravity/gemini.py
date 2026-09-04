@@ -27,6 +27,7 @@ from log import log
 from src.utils import (
     get_base_model_from_feature_model,
     is_anti_truncation_model,
+    is_tool_anti_truncation_model,
     authenticate_gemini_flexible,
     is_fake_streaming_model
 )
@@ -87,6 +88,7 @@ async def generate_content(
 
     # 处理模型名称和功能检测
     use_anti_truncation = is_anti_truncation_model(model)
+    use_tool_anti_truncation = is_tool_anti_truncation_model(model)
     real_model = get_base_model_from_feature_model(model)
 
     # 对于抗截断模型的非流式请求，给出警告
@@ -98,13 +100,20 @@ async def generate_content(
 
     # 规范化 Gemini 请求 (使用 antigravity 模式)
     from src.converter.antigravity_fix import normalize_antigravity_request
-    normalized_dict = await normalize_antigravity_request(normalized_dict)
+    normalized_dict = await normalize_antigravity_request(
+        normalized_dict,
+        preserve_trailing_model=use_tool_anti_truncation,
+    )
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
         "model": normalized_dict.pop("model"),
         "request": normalized_dict
     }
+    if use_tool_anti_truncation:
+        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
 
     # 调用 API 层的非流式请求
     from src.api.antigravity import non_stream_request
@@ -149,6 +158,7 @@ async def stream_generate_content(
     # 处理模型名称和功能检测
     use_fake_streaming = is_fake_streaming_model(model)
     use_anti_truncation = is_anti_truncation_model(model)
+    use_tool_anti_truncation = is_tool_anti_truncation_model(model)
     real_model = get_base_model_from_feature_model(model)
 
     # 更新模型名为真实模型名
@@ -159,13 +169,20 @@ async def stream_generate_content(
         from src.converter.antigravity_fix import normalize_antigravity_request
         from src.api.antigravity import non_stream_request
 
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_antigravity_request(
+            normalized_dict.copy(),
+            preserve_trailing_model=use_tool_anti_truncation,
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
+        if use_tool_anti_truncation:
+            from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+            api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
 
         response = await non_stream_request(body=api_request)
 
@@ -224,7 +241,10 @@ async def stream_generate_content(
         from fastapi import Response
 
         # 先进行基础标准化
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_antigravity_request(
+            normalized_dict.copy(),
+            preserve_trailing_model=use_tool_anti_truncation,
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
@@ -310,13 +330,20 @@ async def stream_generate_content(
         from src.api.antigravity import stream_request
         from fastapi import Response
 
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_antigravity_request(
+            normalized_dict.copy(),
+            preserve_trailing_model=use_tool_anti_truncation,
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
+        if use_tool_anti_truncation:
+            from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+            api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
 
         # 所有流式请求都使用非 native 模式（SSE格式）并展开 response 包装
         log.debug(f"[ANTIGRAVITY] 使用非native模式，将展开response包装")
