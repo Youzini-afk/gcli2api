@@ -256,9 +256,10 @@ All models have 1M context window capacity. Each credential file provides 1000 r
 - `gemini-3.1-pro-preview`
 
 ### 🧠 Thinking Models
-- `gemini-2.5-pro-high`: Thinking mode
-- `gemini-2.5-pro-low`: Low thinking mode
-- Supports custom thinking budget configuration
+- OpenAI-compatible requests use `reasoning_effort`
+- Gemini-native requests use `generationConfig.thinkingConfig`
+- Anthropic requests use `thinking`
+- Legacy `-high` / `-low` / `-medium` / `-minimal` suffixes remain callable but are no longer expanded by the Gemini CLI model list. Real suffixed IDs returned by Antigravity remain visible; explicit request parameters take precedence.
 - Automatic separation of thinking content and final answers
 
 ### 🔍 Search-Enhanced Models
@@ -282,21 +283,28 @@ All models have 1M context window capacity. Each credential file provides 1000 r
 - When no ratio is specified, the API automatically decides the aspect ratio
 
 ### 🌊 Special Feature Variants
-- **Fake Streaming Mode**: Add `-假流式` suffix to any model name
-  - Example: `gemini-2.5-pro-假流式`
+- **Fake Streaming Mode**: Add the `假流式/` prefix to the model name
+  - Example: `假流式/gemini-2.5-pro`
   - For scenarios requiring streaming responses but server doesn't support true streaming
 - **Streaming Anti-truncation Mode**: Add `流式抗截断/` prefix to model name
   - Example: `流式抗截断/gemini-2.5-pro`
   - Automatically detects response truncation and retries to ensure complete answers
 - **Synthetic Tool Anti-truncation Mode**: Add `工具抗截断/` prefix to the model name
-  - Example: `工具抗截断/gemini-3.7-flash-low`
+  - Example: `工具抗截断/gemini-2.5-flash`
   - Carries the complete answer through a one-time synthetic tool in streaming or non-streaming mode
   - Preserves genuine client tool calls and transparently falls back for forced `tool_choice`
+- **`[实验性]` Full Image Context Mode**: Renders system instructions and conversation text as PNG and sends it upstream as Gemini `inlineData`
+  - Example: `[实验性] gemini-2.5-flash`
+  - Preserves native images, files and genuine tool calls; downstream output automatically reuses synthetic-tool anti-truncation
+- **`[混合实验性]` Current-turn Image Context Mode**: Converts only content after the latest assistant/model message and keeps history as text
+  - Example: `[混合实验性] gemini-2.5-flash`
+  - Prefer this mode when possible because it uses fewer image tokens and a smaller request body
+- Image rendering failures transparently fall back to text. A confirmed upstream image-format rejection gets one text retry with the same credential.
 
 ### 🔧 Automatic Model Feature Detection
-- System automatically recognizes feature identifiers in model names
-- Transparently handles feature mode transitions
-- Supports feature combination usage
+- A shared `ModelFeature` parser recognizes the model name and legacy suffixes once
+- Transport variants are mutually exclusive; if markers are accidentally combined, image context takes precedence
+- Thinking parameters are independent from transport and can be used with any one variant
 
 ---
 
@@ -808,12 +816,15 @@ for part in response.candidates[0].content.parts:
 **Thinking Mode Support**
 ```json
 {
-  "model": "gemini-2.5-pro-high",
+  "model": "gemini-2.5-pro",
+  "reasoning_effort": "high",
   "messages": [
     {"role": "user", "content": "Complex math problem"}
   ]
 }
 ```
+
+Gemini-native clients can send `generationConfig.thinkingConfig`; Anthropic clients can send `thinking.type` and `thinking.budget_tokens`. Legacy model suffixes remain accepted for compatibility.
 
 Response will include separated thinking content:
 ```json
@@ -834,6 +845,17 @@ Response will include separated thinking content:
   "model": "流式抗截断/gemini-2.5-pro",
   "messages": [
     {"role": "user", "content": "Write a long article"}
+  ],
+  "stream": true
+}
+```
+
+**Current-turn Image Context (recommended experimental mode)**
+```json
+{
+  "model": "[混合实验性] gemini-2.5-flash",
+  "messages": [
+    {"role": "user", "content": "Process this turn through image context"}
   ],
   "stream": true
 }

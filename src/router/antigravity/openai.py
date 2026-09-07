@@ -25,11 +25,9 @@ from log import log
 
 # 本地模块 - 工具和认证
 from src.utils import (
-    get_base_model_from_feature_model,
-    is_anti_truncation_model,
-    is_tool_anti_truncation_model,
-    is_fake_streaming_model,
+    apply_model_feature_flags,
     authenticate_bearer,
+    parse_model_feature,
 )
 
 # 本地模块 - 转换器（假流式需要）
@@ -84,10 +82,12 @@ async def chat_completions(
         return JSONResponse(content=response)
 
     # 处理模型名称和功能检测
-    use_fake_streaming = is_fake_streaming_model(openai_request.model)
-    use_anti_truncation = is_anti_truncation_model(openai_request.model)
-    use_tool_anti_truncation = is_tool_anti_truncation_model(openai_request.model)
-    real_model = get_base_model_from_feature_model(openai_request.model)
+    model_feature = parse_model_feature(openai_request.model, backend="antigravity")
+    use_fake_streaming = model_feature.transport == "fake_stream"
+    use_anti_truncation = model_feature.transport == "stream_anti_truncation"
+    use_tool_anti_truncation = model_feature.transport == "tool_anti_truncation"
+    use_image_context = model_feature.transport in {"image_all", "image_current_turn"}
+    real_model = model_feature.request_model
 
     # 获取流式标志
     is_streaming = openai_request.stream
@@ -110,7 +110,7 @@ async def chat_completions(
     from src.converter.antigravity_fix import normalize_antigravity_request
     gemini_dict = await normalize_antigravity_request(
         gemini_dict,
-        preserve_trailing_model=use_tool_anti_truncation,
+        preserve_trailing_model=use_tool_anti_truncation or use_image_context,
     )
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
@@ -118,10 +118,7 @@ async def chat_completions(
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
-    if use_tool_anti_truncation:
-        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
-
-        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
+    apply_model_feature_flags(api_request, model_feature)
 
     # ========== 非流式请求 ==========
     if not is_streaming:

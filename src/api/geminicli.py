@@ -34,9 +34,14 @@ from src.api.utils import (
 )
 from src.utils import get_geminicli_user_agent
 from src.converter.tool_anti_truncation import (
+    TOOL_ANTI_TRUNCATION_FLAG,
     prepare_tool_anti_truncation_request,
     transform_non_stream_response,
     transform_stream_item,
+)
+from src.converter.image_context import (
+    IMAGE_CONTEXT_MODE_FLAG,
+    prepare_image_context_request,
 )
 
 # ==================== 全局凭证管理器 ====================
@@ -92,6 +97,88 @@ def _is_retryable_status(status_code: int, disable_error_codes: list[int]) -> bo
     return status_code in (429, 500, 503) or status_code in disable_error_codes
 
 
+_IMAGE_CONTEXT_ERROR_STATUSES = {400, 415, 422}
+_IMAGE_CONTEXT_MARKERS = (
+    "inlinedata",
+    "inline_data",
+    "inline data",
+    "multimodal",
+    "multi-modal",
+    "image input",
+    "image data",
+    "image part",
+    "image context",
+    "image content",
+    "image is",
+    "support image",
+    "image/",
+)
+_IMAGE_CONTEXT_REJECTION_MARKERS = (
+    "invalid",
+    "unsupported",
+    "not supported",
+    "unknown",
+    "unrecognized",
+    "malformed",
+    "not allowed",
+    "cannot",
+    "can't",
+    "expected",
+    "must be",
+    "format",
+    "no such field",
+    "not enabled",
+    "not available",
+)
+_QUOTA_ERROR_MARKERS = (
+    "quota",
+    "resource_exhausted",
+    "resource exhausted",
+    "rate limit",
+    "too many requests",
+    "billing",
+    "credit limit",
+    "capacity",
+)
+
+
+def _is_confirmed_image_context_error(status_code: int, error_text: str) -> bool:
+    """Return true only for an explicit upstream multimodal-shape rejection."""
+    if status_code not in _IMAGE_CONTEXT_ERROR_STATUSES or not error_text:
+        return False
+    normalized = error_text.lower()
+    if any(marker in normalized for marker in _QUOTA_ERROR_MARKERS):
+        return False
+    has_image_marker = any(marker in normalized for marker in _IMAGE_CONTEXT_MARKERS)
+    return has_image_marker and any(
+        marker in normalized for marker in _IMAGE_CONTEXT_REJECTION_MARKERS
+    )
+
+
+async def _prepare_request_variants(body: Dict[str, Any]):
+    """Prepare image and text-fallback bodies before synthetic-tool injection."""
+    if IMAGE_CONTEXT_MODE_FLAG not in body:
+        prepared, context = prepare_tool_anti_truncation_request(body)
+        return prepared, context, None, None, False
+
+    image_result = await asyncio.to_thread(prepare_image_context_request, body)
+    if not image_result.mode:
+        prepared, context = prepare_tool_anti_truncation_request(image_result.payload)
+        return prepared, context, None, None, False
+
+    image_result.payload[TOOL_ANTI_TRUNCATION_FLAG] = True
+    if not image_result.applied:
+        prepared, context = prepare_tool_anti_truncation_request(image_result.payload)
+        return prepared, context, None, None, False
+
+    image_result.original_payload[TOOL_ANTI_TRUNCATION_FLAG] = True
+    prepared, context = prepare_tool_anti_truncation_request(image_result.payload)
+    fallback, fallback_context = prepare_tool_anti_truncation_request(
+        image_result.original_payload
+    )
+    return prepared, context, fallback, fallback_context, bool(image_result.applied)
+
+
 async def _switch_credential_for_retry(
     *,
     next_cred_task: Optional[asyncio.Task],
@@ -137,7 +224,13 @@ async def stream_request(
     Yields:
         Response对象（错误时）或 bytes流/str流（成功时）
     """
-    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
+    (
+        body,
+        tool_anti_context,
+        fallback_body,
+        fallback_tool_anti_context,
+        image_fallback_available,
+    ) = await _prepare_request_variants(body)
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -163,6 +256,11 @@ async def stream_request(
             body, credential_data,
             f"{await get_code_assist_endpoint()}/v1internal:streamGenerateContent?alt=sse"
         )
+        fallback_final_payload = None
+        if fallback_body is not None:
+            _, fallback_final_payload, _ = await prepare_request_headers_and_payload(
+                fallback_body, credential_data, target_url
+            )
 
         # 合并自定义headers
         if headers:
@@ -176,6 +274,64 @@ async def stream_request(
             media_type="application/json"
         )
         return
+
+    use_text_fallback = False
+
+    async def stream_current_payload():
+        """Retry a confirmed multimodal rejection once, without changing credential."""
+        nonlocal use_text_fallback
+        request_payload = (
+            fallback_final_payload
+            if use_text_fallback and fallback_final_payload is not None
+            else final_payload
+        )
+        emitted_data = False
+        retry_with_text = False
+        upstream_stream = stream_post_async(
+            url=target_url,
+            body=request_payload,
+            native=native,
+            headers=auth_headers,
+        )
+        async for item in upstream_stream:
+            if (
+                isinstance(item, Response)
+                and image_fallback_available
+                and not use_text_fallback
+                and not emitted_data
+            ):
+                try:
+                    item_error = (
+                        item.body.decode("utf-8")
+                        if isinstance(item.body, bytes)
+                        else str(item.body)
+                    )
+                except Exception:
+                    item_error = ""
+                if _is_confirmed_image_context_error(item.status_code, item_error):
+                    use_text_fallback = True
+                    retry_with_text = True
+                    log.info(
+                        "[GEMINICLI STREAM] 上游拒绝图片上下文，"
+                        f"使用同一凭证立即回退纯文本表示: {current_file}"
+                    )
+                    break
+            if not isinstance(item, Response):
+                emitted_data = True
+            yield item
+        if not retry_with_text:
+            return
+
+        close_stream = getattr(upstream_stream, "aclose", None)
+        if close_stream is not None:
+            await close_stream()
+        async for fallback_item in stream_post_async(
+            url=target_url,
+            body=fallback_final_payload,
+            native=native,
+            headers=auth_headers,
+        ):
+            yield fallback_item
 
     # 3. 调用stream_post_async进行请求
     retry_config = await get_retry_config()
@@ -205,6 +361,8 @@ async def stream_request(
             # 直接更新现有的headers和payload
             auth_headers["Authorization"] = f"Bearer {token}"
             final_payload["project"] = project_id
+            if fallback_final_payload is not None:
+                fallback_final_payload["project"] = project_id
             return True
         except Exception:
             return None
@@ -218,6 +376,8 @@ async def stream_request(
             return False
         auth_headers["Authorization"] = f"Bearer {token}"
         final_payload["project"] = project_id
+        if fallback_final_payload is not None:
+            fallback_final_payload["project"] = project_id
         return True
 
     for attempt in range(max_retries + 1):
@@ -225,16 +385,19 @@ async def stream_request(
         need_retry = False  # 标记是否需要重试
 
         try:
-            async for chunk in stream_post_async(
-                url=target_url,
-                body=final_payload,
-                native=native,
-                headers=auth_headers
-            ):
+            async for chunk in stream_current_payload():
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
                     status_code = chunk.status_code
                     last_error_response = chunk  # 记录最后一次错误
+
+                    if success_recorded:
+                        log.warning(
+                            "[GEMINICLI STREAM] 已输出部分响应后收到上游错误，"
+                            "原样返回错误并停止，避免重试造成重复内容"
+                        )
+                        yield chunk
+                        return
 
                     # 缓存错误解析结果,避免重复decode
                     error_body = None
@@ -341,7 +504,12 @@ async def stream_request(
                         success_recorded = True
                         log.debug(f"[GEMINICLI STREAM] 开始接收流式响应，模型: {model_name}")
 
-                    yield transform_stream_item(chunk, tool_anti_context)
+                    active_tool_context = (
+                        fallback_tool_anti_context
+                        if use_text_fallback
+                        else tool_anti_context
+                    )
+                    yield transform_stream_item(chunk, active_tool_context)
 
             # 流式请求完成，检查结果
             if success_recorded:
@@ -384,6 +552,23 @@ async def stream_request(
 
         except Exception as e:
             log.error(f"[GEMINICLI STREAM] 流式请求异常: {e}, 凭证: {current_file}")
+            if success_recorded:
+                log.warning("[GEMINICLI STREAM] 已输出部分响应，不再重试以避免重复内容")
+                yield Response(
+                    content=json.dumps(
+                        {
+                            "error": {
+                                "code": 502,
+                                "message": "上游流在输出部分内容后中断",
+                                "status": "UPSTREAM_STREAM_INTERRUPTED",
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                    status_code=502,
+                    media_type="application/json",
+                )
+                return
             if attempt < max_retries:
                 log.info(f"[GEMINICLI STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
                 await asyncio.sleep(retry_interval)
@@ -429,7 +614,13 @@ async def non_stream_request(
     Returns:
         Response对象
     """
-    body, tool_anti_context = prepare_tool_anti_truncation_request(body)
+    (
+        body,
+        tool_anti_context,
+        fallback_body,
+        fallback_tool_anti_context,
+        image_fallback_available,
+    ) = await _prepare_request_variants(body)
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -454,6 +645,11 @@ async def non_stream_request(
             body, credential_data,
             f"{await get_code_assist_endpoint()}/v1internal:generateContent"
         )
+        fallback_final_payload = None
+        if fallback_body is not None:
+            _, fallback_final_payload, _ = await prepare_request_headers_and_payload(
+                fallback_body, credential_data, target_url
+            )
 
         # 合并自定义headers
         if headers:
@@ -466,6 +662,37 @@ async def non_stream_request(
             status_code=500,
             media_type="application/json"
         )
+
+    use_text_fallback = False
+
+    async def post_current_payload():
+        """Retry a confirmed multimodal rejection once, without changing credential."""
+        nonlocal use_text_fallback
+        request_payload = (
+            fallback_final_payload
+            if use_text_fallback and fallback_final_payload is not None
+            else final_payload
+        )
+        response = await post_async(
+            url=target_url, json=request_payload, headers=auth_headers
+        )
+        if image_fallback_available and not use_text_fallback:
+            try:
+                response_error = response.text
+            except Exception:
+                response_error = ""
+            if _is_confirmed_image_context_error(response.status_code, response_error):
+                use_text_fallback = True
+                log.info(
+                    "[GEMINICLI] 上游拒绝图片上下文，"
+                    f"使用同一凭证立即回退纯文本表示: {current_file}"
+                )
+                return await post_async(
+                    url=target_url,
+                    json=fallback_final_payload,
+                    headers=auth_headers,
+                )
+        return response
 
     # 3. 调用post_async进行请求
     retry_config = await get_retry_config()
@@ -495,6 +722,8 @@ async def non_stream_request(
             # 直接更新现有的headers和payload
             auth_headers["Authorization"] = f"Bearer {token}"
             final_payload["project"] = project_id
+            if fallback_final_payload is not None:
+                fallback_final_payload["project"] = project_id
             return True
         except Exception:
             return None
@@ -508,15 +737,13 @@ async def non_stream_request(
             return False
         auth_headers["Authorization"] = f"Bearer {token}"
         final_payload["project"] = project_id
+        if fallback_final_payload is not None:
+            fallback_final_payload["project"] = project_id
         return True
 
     for attempt in range(max_retries + 1):
         try:
-            response = await post_async(
-                url=target_url,
-                json=final_payload,
-                headers=auth_headers
-            )
+            response = await post_current_payload()
 
             status_code = response.status_code
 
@@ -532,7 +759,10 @@ async def non_stream_request(
 
                 return Response(
                     content=transform_non_stream_response(
-                        response.content, tool_anti_context
+                        response.content,
+                        fallback_tool_anti_context
+                        if use_text_fallback
+                        else tool_anti_context,
                     ),
                     status_code=200,
                     headers=response_headers

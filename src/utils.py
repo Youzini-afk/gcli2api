@@ -1,9 +1,11 @@
-from typing import List, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 from config import get_api_password, get_panel_password
 from fastapi import Depends, HTTPException, Header, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from log import log
+from src.models import ModelFeature
 
 # HTTP Bearer security scheme. Panel auth handles missing credentials itself so
 # its failures can carry an explicit marker for the browser.
@@ -17,11 +19,13 @@ _GEMINICLI_PLATFORM = "win32"
 _GEMINICLI_ARCH = "x64"
 _GEMINICLI_SURFACE = "cloud-shell"
 
+
 def get_geminicli_user_agent(model: str = "") -> str:
     """生成动态 User-Agent: GeminiCLI/{version}/{model} ({platform}; {arch}; {surface})"""
     if model:
         return f"GeminiCLI/{_GEMINICLI_VERSION}/{model} ({_GEMINICLI_PLATFORM}; {_GEMINICLI_ARCH}; {_GEMINICLI_SURFACE})"
     return f"GeminiCLI/{_GEMINICLI_VERSION} ({_GEMINICLI_PLATFORM}; {_GEMINICLI_ARCH}; {_GEMINICLI_SURFACE})"
+
 
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
@@ -44,11 +48,11 @@ SCOPES = [
 ANTIGRAVITY_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 ANTIGRAVITY_CLIENT_SECRET = "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"
 ANTIGRAVITY_SCOPES = [
-    'https://www.googleapis.com/auth/cloud-platform',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile',
-    'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs'
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/cclog",
+    "https://www.googleapis.com/auth/experimentsandconfigs",
 ]
 
 # 统一的 Token URL（两种模式相同）
@@ -70,28 +74,191 @@ BASE_MODELS = [
 
 # ====================== Model Helper Functions ======================
 
+_MODEL_TRANSPORT_PREFIXES = (
+    ("假流式/", "fake_stream"),
+    ("流式抗截断/", "stream_anti_truncation"),
+    ("工具抗截断/", "tool_anti_truncation"),
+)
+
+# These are client-facing compatibility suffixes.  They are intentionally
+# parsed as names (rather than matching arbitrary text in a model ID).
+_LEGACY_THINKING_SUFFIXES = (
+    "maxthinking",
+    "nothinking",
+    "minimal",
+    "medium",
+    "high",
+    "low",
+    "max",
+    "think",
+)
+
+_EXPERIMENTAL_MARKER_RE = re.compile(r"\s*\[(混合实验性|实验性)\]\s*", re.UNICODE)
+
+
+def _strip_model_markers(model_name: str) -> tuple[str, Optional[str]]:
+    """Remove experimental labels while retaining the model ID itself."""
+    marker_names = _EXPERIMENTAL_MARKER_RE.findall(model_name)
+    if not marker_names:
+        return model_name.strip(), None
+
+    # A label is metadata and may occur before or after a transport prefix.
+    # Removing all occurrences also accepts both ``[实验性]model`` and
+    # ``model [实验性]`` forms (with or without a separating space).
+    result = _EXPERIMENTAL_MARKER_RE.sub("", model_name).strip()
+    # Be liberal about the common ``[实验性]/model`` spelling.
+    result = result.lstrip("/").strip()
+    marker = "混合实验性" if "混合实验性" in marker_names else "实验性"
+    return result, marker
+
+
+def parse_model_feature(model_name: str, *, backend: str | None = None) -> ModelFeature:
+    """Parse transport, experiment and legacy model-name features once.
+
+    ``backend="antigravity"`` is deliberately conservative: ``-high`` and
+    ``-low`` can be part of a real Antigravity upstream model ID, so those two
+    suffixes are not removed there.  Other known compatibility suffixes remain
+    available for old callers.  GeminiCLI treats all known thinking suffixes
+    as compatibility metadata.
+    """
+    original = "" if model_name is None else str(model_name)
+    marked_name, marker = _strip_model_markers(original)
+
+    transport = "normal"
+    remainder = marked_name
+    for prefix, transport_name in _MODEL_TRANSPORT_PREFIXES:
+        if remainder.startswith(prefix):
+            transport = transport_name
+            remainder = remainder[len(prefix) :].lstrip()
+            break
+
+    request_model = remainder.strip()
+    if marker == "混合实验性":
+        transport = "image_current_turn"
+    elif marker == "实验性":
+        transport = "image_all"
+
+    # Search can be combined with thinking (e.g. ``-high-search``), so peel it
+    # first.  Matching at the end prevents model IDs containing the word
+    # "search" from being altered.
+    search_enabled = False
+    remainder = remainder.strip()
+    while remainder.lower().endswith("-search"):
+        search_enabled = True
+        remainder = remainder[: -len("-search")].rstrip()
+
+    legacy_thinking: Optional[str] = None
+    lowered = remainder.lower()
+    for suffix in _LEGACY_THINKING_SUFFIXES:
+        token = f"-{suffix}"
+        if not lowered.endswith(token):
+            continue
+        # Antigravity's high/low IDs are ambiguous.  Only the unambiguous
+        # compatibility suffixes are interpreted on that backend.
+        if backend == "antigravity" and suffix in {"high", "low"}:
+            break
+        remainder = remainder[: -len(token)].rstrip()
+        legacy_thinking = suffix
+        break
+
+    return ModelFeature(
+        original_model=original,
+        base_model=remainder,
+        request_model=request_model,
+        transport=transport,
+        legacy_thinking=legacy_thinking,
+        search_enabled=search_enabled,
+        experimental=marker is not None,
+        mixed_experimental=marker == "混合实验性",
+        experimental_marker=marker,
+    )
+
+
 def is_fake_streaming_model(model_name: str) -> bool:
     """Check if model name indicates fake streaming should be used."""
-    return model_name.startswith("假流式/")
+    return parse_model_feature(model_name).transport == "fake_stream"
 
 
 def is_anti_truncation_model(model_name: str) -> bool:
     """Check if model name indicates anti-truncation should be used."""
-    return model_name.startswith("流式抗截断/")
+    return parse_model_feature(model_name).transport == "stream_anti_truncation"
 
 
 def is_tool_anti_truncation_model(model_name: str) -> bool:
     """Check if synthetic-tool anti-truncation should be used."""
-    return model_name.startswith("工具抗截断/")
+    return parse_model_feature(model_name).transport == "tool_anti_truncation"
 
 
 def get_base_model_from_feature_model(model_name: str) -> str:
-    """Get base model name from feature model name."""
-    # Remove feature prefixes
-    for prefix in ["假流式/", "流式抗截断/", "工具抗截断/"]:
-        if model_name.startswith(prefix):
-            return model_name[len(prefix) :]
-    return model_name
+    """Remove only transport/experiment markers (historical route behavior).
+
+    Legacy thinking/search suffixes are intentionally retained.  The request
+    converters need to see them in order to provide fallback behavior, and
+    Antigravity must not accidentally lose a real ``-high``/``-low`` ID.
+    """
+    return parse_model_feature(model_name).request_model
+
+
+def apply_model_feature_flags(api_request: Dict[str, Any], feature: ModelFeature) -> Dict[str, Any]:
+    """Attach private transport controls to one normalized API request."""
+    if feature.transport == "tool_anti_truncation":
+        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
+
+        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
+    elif feature.transport in {"image_all", "image_current_turn"}:
+        from src.converter.image_context import IMAGE_CONTEXT_MODE_FLAG, ImageContextMode
+
+        api_request[IMAGE_CONTEXT_MODE_FLAG] = (
+            ImageContextMode.ALL_TEXT.value
+            if feature.transport == "image_all"
+            else ImageContextMode.CURRENT_TURN.value
+        )
+    return api_request
+
+
+def thinking_config_for_effort(model_name: str, effort: object) -> dict:
+    """Translate an explicit OpenAI reasoning effort to Gemini config.
+
+    The mapping mirrors the existing GeminiCLI compatibility suffix mapping.
+    For an unknown model family, a recognized level is still expressed via
+    ``thinkingLevel``; no model ID is invented or rewritten here.
+    """
+    if effort is None:
+        return {}
+    value = str(effort).strip().lower()
+    if not value:
+        return {}
+
+    if value in {"none", "off", "disabled", "disable"}:
+        return {"includeThoughts": False}
+
+    feature = parse_model_feature(model_name, backend="geminicli")
+    base = feature.base_model.lower()
+    if value == "max":
+        if "gemini-2.5" in base:
+            return {"thinkingBudget": 24576 if "flash" in base else 32768}
+        return {"thinkingLevel": "high"}
+
+    if value not in {"minimal", "low", "medium", "high"}:
+        return {}
+
+    if "gemini-2.5" in base:
+        budgets = {
+            "minimal": 0 if "flash" in base else 128,
+            "low": 1024,
+            "medium": 8192,
+            "high": 16000,
+        }
+        return {"thinkingBudget": budgets[value]}
+
+    # Gemini 3 and newer routes use thinkingLevel.  Keeping the value as a
+    # level also gives unknown Antigravity model IDs the best explicit effort
+    # behavior without fabricating a route name.
+    return {"thinkingLevel": value}
+
+
+# Descriptive alias for callers that prefer the ``get_*`` naming convention.
+get_thinking_config_for_effort = thinking_config_for_effort
 
 
 def get_available_models(router_type: str = "openai") -> List[str]:
@@ -119,48 +286,15 @@ def get_available_models(router_type: str = "openai") -> List[str]:
         # 合成工具抗截断模型（支持流式与非流式）
         models.append(f"工具抗截断/{base_model}")
 
-        # 定义思考后缀（根据模型系列不同）
-        thinking_suffixes = []
-
-        # Gemini 2.5 系列: 使用思考预算后缀
-        if "gemini-2.5" in base_model:
-            thinking_suffixes = ["-max", "-high", "-medium", "-low", "-minimal"]
-        # Gemini 3 系列: 使用思考等级后缀
-        elif "gemini-3" in base_model:
-            if "flash" in base_model:
-                # 3-flash-preview: 支持 high/medium/low/minimal
-                thinking_suffixes = ["-high", "-medium", "-low", "-minimal"]
-            elif "pro" in base_model:
-                # 3-pro-preview: 支持 high/low
-                thinking_suffixes = ["-high", "-low"]
-
-        search_suffix = "-search"
-
-        # 1. 单独的 thinking 后缀
-        for thinking_suffix in thinking_suffixes:
-            models.append(f"{base_model}{thinking_suffix}")
-            models.append(f"假流式/{base_model}{thinking_suffix}")
-            models.append(f"流式抗截断/{base_model}{thinking_suffix}")
-            models.append(f"工具抗截断/{base_model}{thinking_suffix}")
-
-        # 2. 单独的 search 后缀
-        models.append(f"{base_model}{search_suffix}")
-        models.append(f"假流式/{base_model}{search_suffix}")
-        models.append(f"流式抗截断/{base_model}{search_suffix}")
-        models.append(f"工具抗截断/{base_model}{search_suffix}")
-
-        # 3. thinking + search 组合后缀
-        for thinking_suffix in thinking_suffixes:
-            combined_suffix = f"{thinking_suffix}{search_suffix}"
-            models.append(f"{base_model}{combined_suffix}")
-            models.append(f"假流式/{base_model}{combined_suffix}")
-            models.append(f"流式抗截断/{base_model}{combined_suffix}")
-            models.append(f"工具抗截断/{base_model}{combined_suffix}")
+        # 图片上下文模型（下行自动复用工具抗截断）
+        models.append(f"[实验性] {base_model}")
+        models.append(f"[混合实验性] {base_model}")
 
     return models
 
 
 # ====================== Authentication Functions ======================
+
 
 async def authenticate_flexible(
     request: Request,
@@ -170,7 +304,7 @@ async def authenticate_flexible(
     x_goog_api_key: Optional[str] = Header(None, alias="x-goog-api-key"),
     x_anthropic_auth_token: Optional[str] = Header(None, alias="x-anthropic-auth-token"),
     anthropic_auth_token: Optional[str] = Header(None, alias="anthropic-auth-token"),
-    key: Optional[str] = Query(None)
+    key: Optional[str] = Query(None),
 ) -> str:
     """
     统一的灵活认证函数，支持多种认证方式
@@ -260,15 +394,12 @@ async def authenticate_flexible(
             detail="Missing authentication credentials. Use 'key' URL parameter, 'x-goog-api-key', 'x-anthropic-auth-token', 'anthropic-auth-token', 'x-api-key', 'access_token' header, or 'Authorization: Bearer <token>'",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # 验证 token
     if token != password:
         log.debug(f"Authentication failed using {auth_method}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="密码错误"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="密码错误")
+
     log.debug(f"Authentication successful using {auth_method}")
     return token
 
@@ -279,6 +410,7 @@ authenticate_gemini_flexible = authenticate_flexible
 
 
 # ====================== Panel Authentication Functions ======================
+
 
 async def verify_panel_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),

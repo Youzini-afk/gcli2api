@@ -25,11 +25,9 @@ from log import log
 
 # 本地模块 - 工具和认证
 from src.utils import (
-    get_base_model_from_feature_model,
-    is_anti_truncation_model,
-    is_tool_anti_truncation_model,
-    is_fake_streaming_model,
+    apply_model_feature_flags,
     authenticate_bearer,
+    parse_model_feature,
 )
 
 # 本地模块 - 转换器（假流式需要）
@@ -87,10 +85,10 @@ async def messages(
         return JSONResponse(content=response)
 
     # 处理模型名称和功能检测
-    use_fake_streaming = is_fake_streaming_model(claude_request.model)
-    use_anti_truncation = is_anti_truncation_model(claude_request.model)
-    use_tool_anti_truncation = is_tool_anti_truncation_model(claude_request.model)
-    real_model = get_base_model_from_feature_model(claude_request.model)
+    model_feature = parse_model_feature(claude_request.model, backend="geminicli")
+    use_fake_streaming = model_feature.transport == "fake_stream"
+    use_anti_truncation = model_feature.transport == "stream_anti_truncation"
+    real_model = model_feature.request_model
 
     # 获取流式标志
     is_streaming = claude_request.stream
@@ -118,10 +116,7 @@ async def messages(
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
-    if use_tool_anti_truncation:
-        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
-
-        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
+    apply_model_feature_flags(api_request, model_feature)
 
     # ========== 非流式请求 ==========
     if not is_streaming:
@@ -306,20 +301,8 @@ async def messages(
             async for chunk in prepend_async_item(first_chunk, stream_gen):
                 # 检查是否是Response对象（错误情况）
                 if isinstance(chunk, Response):
-                    # 错误响应，不进行转换，直接传递
-                    try:
-                        error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
-                        gemini_error = json.loads(error_content.decode('utf-8'))
-                        from src.converter.anthropic2gemini import gemini_to_anthropic_response
-                        anthropic_error = gemini_to_anthropic_response(
-                            gemini_error,
-                            real_model,
-                            chunk.status_code
-                        )
-                        yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
-                    except Exception:
-                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
-                    yield b"data: [DONE]\n\n"
+                    # 保留 Response 类型，交由 Anthropic 流转换器生成 error 事件。
+                    yield chunk
                     return
                 else:
                     # 确保是bytes类型

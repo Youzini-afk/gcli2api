@@ -265,9 +265,10 @@ ghcr.io/youzini-afk/gcli2api:latest
 - `gemini-3.1-pro-preview`
 
 ### 🧠 思维模型（Thinking Models）
-- `gemini-2.5-pro-high`：思考模式
-- `gemini-2.5-pro-low`：低思考模式
-- 支持自定义思考预算配置
+- OpenAI 兼容请求使用 `reasoning_effort`
+- Gemini 原生请求使用 `generationConfig.thinkingConfig`
+- Anthropic 请求使用 `thinking`
+- `-high` / `-low` / `-medium` / `-minimal` 等旧模型后缀仍可调用，Gemini CLI 列表不再展开这些组合；Antigravity 上游真实返回的带后缀 ID 仍保留；显式请求参数优先
 - 自动分离思维内容和最终回答
 
 ### 🔍 搜索增强模型
@@ -291,21 +292,28 @@ ghcr.io/youzini-afk/gcli2api:latest
 - 不指定比例时，API 自动决定横竖比例
 
 ### 🌊 特殊功能变体
-- **假流式模式**：在任何模型名称后添加 `-假流式` 后缀
-  - 例：`gemini-2.5-pro-假流式`
+- **假流式模式**：在模型名称前添加 `假流式/` 前缀
+  - 例：`假流式/gemini-2.5-pro`
   - 用于需要流式响应但服务端不支持真流式的场景
 - **流式抗截断模式**：在模型名称前添加 `流式抗截断/` 前缀
   - 例：`流式抗截断/gemini-2.5-pro`  
   - 自动检测响应截断并重试，确保完整回答
 - **工具抗截断模式**：在模型名称前添加 `工具抗截断/` 前缀
-  - 例：`工具抗截断/gemini-3.7-flash-low`
+  - 例：`工具抗截断/gemini-2.5-flash`
   - 通过一次性合成工具承载完整正文，支持流式与非流式
   - 保留客户端真实工具调用；强制指定真实 `tool_choice` 时透明回退
+- **`[实验性]` 全上下文图片模式**：将系统指令和会话文本渲染为 PNG，以 Gemini `inlineData` 发送给上游
+  - 例：`[实验性] gemini-2.5-flash`
+  - 保留原生图片、文件和真实工具调用；下行自动复用工具抗截断
+- **`[混合实验性]` 当前轮图片模式**：仅转换最后一条 assistant/model 之后的当前轮，历史保持文本
+  - 例：`[混合实验性] gemini-2.5-flash`
+  - 建议优先使用该模式，因为它的图片 Token 和请求体开销更低
+- 图片模式渲染失败时会透明回退到文本；上游明确拒绝图片格式时仅会使用同一凭证做一次文本重试
 
 ### 🔧 模型功能自动检测
-- 系统自动识别模型名称中的功能标识
-- 透明地处理功能模式转换
-- 支持功能组合使用
+- 系统使用统一 `ModelFeature` 解析器一次识别模型名称和兼容后缀
+- 传输变体之间互斥；如果误写多个标记，图片上下文标记优先
+- 思考参数与传输变体独立，可与任意一种变体同时使用
 
 ---
 
@@ -828,12 +836,15 @@ for part in response.candidates[0].content.parts:
 **思维模式支持**
 ```json
 {
-  "model": "gemini-2.5-pro-maxthinking",
+  "model": "gemini-2.5-pro",
+  "reasoning_effort": "high",
   "messages": [
     {"role": "user", "content": "复杂数学问题"}
   ]
 }
 ```
+
+Gemini 原生请求可传入 `generationConfig.thinkingConfig`，Anthropic 请求可传入 `thinking.type` 和 `thinking.budget_tokens`。旧的模型后缀仍保留调用兼容。
 
 响应将包含分离的思维内容：
 ```json
@@ -862,9 +873,21 @@ for part in response.candidates[0].content.parts:
 **工具抗截断使用（流式和非流式均可）**
 ```json
 {
-  "model": "工具抗截断/gemini-3.7-flash-low",
+  "model": "工具抗截断/gemini-2.5-flash",
+  "reasoning_effort": "low",
   "messages": [
     {"role": "user", "content": "写一篇长文章"}
+  ],
+  "stream": true
+}
+```
+
+**当前轮图片模式（推荐的实验方式）**
+```json
+{
+  "model": "[混合实验性] gemini-2.5-flash",
+  "messages": [
+    {"role": "user", "content": "用图片上下文处理这一轮请求"}
   ],
   "stream": true
 }

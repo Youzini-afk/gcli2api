@@ -658,6 +658,7 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         config["maxOutputTokens"] = max_tokens
 
     # 处理 extended thinking 参数 (plan mode)
+    thinking_present = "thinking" in payload
     thinking = payload.get("thinking")
     is_plan_mode = False
     if thinking and isinstance(thinking, dict):
@@ -687,6 +688,15 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "includeThoughts": False
             }
             log.info("[ANTHROPIC2GEMINI] Extended thinking explicitly disabled")
+        else:
+            # A non-empty future/unknown object is still explicit.  Preserve
+            # that boundary so a legacy model suffix cannot take control.
+            config["thinkingConfig"] = {}
+    elif thinking_present:
+        # Preserve the explicit-parameter boundary even when a client sends
+        # an empty/unknown thinking object.  The downstream normalizer must
+        # not fall back to a legacy model suffix in that case.
+        config["thinkingConfig"] = {}
 
     stop_sequences = payload.get("stop_sequences")
     if isinstance(stop_sequences, list) and stop_sequences:
@@ -985,10 +995,35 @@ async def gemini_stream_to_anthropic_stream(
         async for chunk in gemini_stream:
             # 检查是否是 Response 对象（错误情况）
             if isinstance(chunk, Response):
-                log.warning(f"[GEMINI_TO_ANTHROPIC] 收到 Response 对象，状态码: {chunk.status_code}，直接转发错误")
-                # 直接转发错误响应内容，不做格式转换
-                error_content = chunk.body if isinstance(chunk.body, bytes) else chunk.body.encode('utf-8')
-                yield error_content
+                log.warning(
+                    f"[GEMINI_TO_ANTHROPIC] 收到 Response 对象，状态码: {chunk.status_code}，"
+                    "转换为 Anthropic error 事件"
+                )
+                try:
+                    raw_error = (
+                        chunk.body.decode("utf-8")
+                        if isinstance(chunk.body, bytes)
+                        else str(chunk.body or "")
+                    )
+                    parsed_error = json.loads(raw_error)
+                    source_error = parsed_error.get("error", parsed_error)
+                    message = (
+                        source_error.get("message")
+                        if isinstance(source_error, dict)
+                        else str(source_error)
+                    )
+                except Exception:
+                    message = "Upstream stream interrupted"
+                yield _sse_event(
+                    "error",
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": message or "Upstream stream interrupted",
+                        },
+                    },
+                )
                 return
 
             # 记录接收到的原始chunk

@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Install runtime libraries and the Mihomo core used by the control panel.
 # jemalloc 替代 glibc malloc，大幅减少内存碎片化
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl tzdata libjemalloc2 && \
+    apt-get install -y --no-install-recommends ca-certificates curl tzdata libjemalloc2 fonts-noto-cjk && \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     ln -sf "$(ldconfig -p | awk '/libjemalloc.so.2/{print $NF; exit}')" /usr/lib/libjemalloc.so.2 && \

@@ -23,6 +23,7 @@ from src.utils import (
 
 # 本地模块 - API
 from src.api.antigravity import fetch_available_models
+from src.converter.tool_anti_truncation import NON_TEXT_MODEL_PATTERN
 
 # 本地模块 - 基础路由工具
 from src.router.base_router import create_gemini_model_list, create_openai_model_list
@@ -59,7 +60,7 @@ async def get_antigravity_models_with_features():
     for base_model in base_model_ids:
         # 基础模型
         models.append(base_model)
-        
+
         # 假流式模型 (前缀格式)
         models.append(f"假流式/{base_model}")
         
@@ -68,8 +69,16 @@ async def get_antigravity_models_with_features():
 
         # 合成工具抗截断模型（支持流式与非流式）
         models.append(f"工具抗截断/{base_model}")
+
+        # 保留旧的传输变体，但非文本模型不新增图片上下文变体。
+        if NON_TEXT_MODEL_PATTERN.search(base_model):
+            continue
+
+        # 图片上下文模型（支持流式与非流式）
+        models.append(f"[实验性] {base_model}")
+        models.append(f"[混合实验性] {base_model}")
     
-    log.info(f"[ANTIGRAVITY MODEL LIST] 生成了 {len(models)} 个模型（包含功能前缀）")
+    log.info(f"[ANTIGRAVITY MODEL LIST] 生成了 {len(models)} 个模型（包含传输变体）")
     return models
 
 

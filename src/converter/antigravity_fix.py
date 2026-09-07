@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from log import log
 from src.converter.thoughtSignature_fix import SKIP_THOUGHT_SIGNATURE_VALIDATOR
+from src.utils import parse_model_feature, thinking_config_for_effort
 
 # ==================== Gemini API 配置 ====================
 
@@ -582,7 +583,11 @@ def prepare_image_generation_request(
 
 def is_thinking_model(model_name: str) -> bool:
     """检查是否为思考模型 (模型名包含 think)"""
-    return "think" in model_name.lower()
+    feature = parse_model_feature(model_name, backend="antigravity")
+    return bool(
+        feature.legacy_thinking
+        or "think" in feature.base_model.lower()
+    )
 
 
 def _normalize_antigravity_request(
@@ -592,40 +597,57 @@ def _normalize_antigravity_request(
     return_thoughts: bool,
 ) -> str:
     """antigravity 模式专属处理，返回处理后的模型名"""
-    # 1. 思考模型处理：antigravity 模型名不带 -high/-low/-search 等后缀，
-    # 仅通过 "think" 是否出现在模型名中判断，命中则使用默认思考预算。
-    thinking = is_thinking_model(model)
+    feature = parse_model_feature(model, backend="antigravity")
+    original_model = model
+    model = feature.base_model
+    thinking = is_thinking_model(original_model)
+    explicit_thinking_config = isinstance(generation_config.get("thinkingConfig"), dict)
 
-    # 针对 Gemini 模型：根据思考设置映射至真实的 Antigravity 后端模型 ID
-    if "gemini" in model.lower():
-        original_model = model
+    # Only this exact alias has an in-repository mapping.  Dynamic
+    # fetchAvailableModels IDs (including -high/-low IDs) are kept verbatim.
+    if feature.base_model.lower() == "gemini-3.1-pro-high":
+        model = "gemini-pro-agent"
+        log.debug(f"[ANTIGRAVITY] 映射模型: {original_model} -> {model}")
 
-        # 兼容旧的客户端别名：Antigravity 后端的 Gemini 3.1 Pro High
-        # 实际使用 gemini-pro-agent 作为模型 ID。
-        if model.lower() == "gemini-3.1-pro-high":
-            model = "gemini-pro-agent"
-            log.debug(f"[ANTIGRAVITY] 映射模型: {original_model} -> {model}")
-
-        # Antigravity uses the Gemini 3.x model route/name to select thinking depth.
-        # Do not send thinkingLevel/thinkingBudget because they can conflict with that route.
-        # Keep includeThoughts so reasoning is still returned to the frontend when enabled.
-        if "gemini-3" in original_model.lower():
-            thinking_config = generation_config.setdefault("thinkingConfig", {})
-            thinking_config.pop("thinkingBudget", None)
-            thinking_config.pop("thinkingLevel", None)
+    # Explicit generationConfig (including one produced from OpenAI
+    # reasoning_effort or Anthropic thinking) always wins over model suffixes.
+    if explicit_thinking_config:
+        thinking_config = generation_config["thinkingConfig"]
+        if "includeThoughts" not in thinking_config:
             thinking_config["includeThoughts"] = return_thoughts
-        else:
-            # 对于 Gemini 2.5 系列，保留 thinkingConfig
-            if thinking:
-                if "thinkingConfig" not in generation_config:
-                    generation_config["thinkingConfig"] = {}
-                thinking_config = generation_config["thinkingConfig"]
-                thinking_config["thinkingBudget"] = 1024
-                thinking_config.pop("thinkingLevel", None)
-                thinking_config["includeThoughts"] = return_thoughts
-    else:
+    elif feature.legacy_thinking == "nothinking":
+        generation_config["thinkingConfig"] = {"includeThoughts": False}
+    elif feature.legacy_thinking in {"maxthinking", "max", "medium", "minimal"}:
+        # These suffixes are unambiguous compatibility aliases.  -high/-low
+        # are intentionally not stripped by the Antigravity parser when they
+        # can be actual upstream IDs; only the remaining aliases reach here.
+        effort = "max" if feature.legacy_thinking == "maxthinking" else feature.legacy_thinking
+        fallback = thinking_config_for_effort(original_model, effort)
+        if fallback:
+            fallback["includeThoughts"] = return_thoughts
+            generation_config["thinkingConfig"] = fallback
+    elif "gemini" in original_model.lower() and "gemini-3" in original_model.lower():
+        # Keep the historical default for Gemini 3, but do not erase any
+        # explicit level/budget supplied by the caller (handled above).
+        generation_config.setdefault("thinkingConfig", {})["includeThoughts"] = return_thoughts
+    elif thinking:
+        if "thinkingConfig" not in generation_config:
+            generation_config["thinkingConfig"] = {}
+        thinking_config = generation_config["thinkingConfig"]
+        thinking_config["thinkingBudget"] = 1024
+        thinking_config.pop("thinkingLevel", None)
+        thinking_config["includeThoughts"] = return_thoughts
+
+    # Search remains a callable compatibility suffix without being advertised
+    # as a separate model.  The model name is already stripped by the parser.
+    if feature.search_enabled:
+        result_tools = result.get("tools") or []
+        result["tools"] = result_tools
+        if not any(tool.get("googleSearch") for tool in result_tools if isinstance(tool, dict)):
+            result_tools.append({"googleSearch": {}})
+    if "gemini" not in model.lower():
         # 针对非 Gemini 模型（如 Claude）
-        if thinking:
+        if thinking and not explicit_thinking_config:
             # 直接设置 thinkingConfig，默认思考预算
             if "thinkingConfig" not in generation_config:
                 generation_config["thinkingConfig"] = {}
@@ -649,11 +671,11 @@ def _normalize_antigravity_request(
                 for content in contents
             )
 
-            if has_tool_calls:
+            if has_tool_calls and not explicit_thinking_config:
                 # MCP 场景：检测到工具调用，移除 thinkingConfig
                 log.warning(f"[ANTIGRAVITY] 检测到工具调用（MCP场景），移除 thinkingConfig 避免失效")
                 generation_config.pop("thinkingConfig", None)
-            else:
+            elif not explicit_thinking_config:
                 # 非 MCP 场景：填充思考块
                 # 找到最后一个 model 角色的 content
                 for i in range(len(contents) - 1, -1, -1):

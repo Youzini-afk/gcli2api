@@ -23,11 +23,9 @@ from log import log
 
 # 本地模块 - 工具和认证
 from src.utils import (
-    get_base_model_from_feature_model,
-    is_anti_truncation_model,
-    is_tool_anti_truncation_model,
+    apply_model_feature_flags,
     authenticate_gemini_flexible,
-    is_fake_streaming_model
+    parse_model_feature,
 )
 
 # 本地模块 - 转换器（假流式需要）
@@ -85,9 +83,9 @@ async def generate_content(
         return JSONResponse(content=response)
 
     # 处理模型名称和功能检测
-    use_anti_truncation = is_anti_truncation_model(model)
-    use_tool_anti_truncation = is_tool_anti_truncation_model(model)
-    real_model = get_base_model_from_feature_model(model)
+    model_feature = parse_model_feature(model, backend="geminicli")
+    use_anti_truncation = model_feature.transport == "stream_anti_truncation"
+    real_model = model_feature.request_model
 
     # 对于抗截断模型的非流式请求，给出警告
     if use_anti_truncation:
@@ -105,10 +103,7 @@ async def generate_content(
         "model": normalized_dict.pop("model"),
         "request": normalized_dict
     }
-    if use_tool_anti_truncation:
-        from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
-
-        api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
+    apply_model_feature_flags(api_request, model_feature)
 
     # 调用 API 层的非流式请求
     from src.api.geminicli import non_stream_request
@@ -150,10 +145,10 @@ async def stream_generate_content(
     normalized_dict = model_to_dict(gemini_request)
 
     # 处理模型名称和功能检测
-    use_fake_streaming = is_fake_streaming_model(model)
-    use_anti_truncation = is_anti_truncation_model(model)
-    use_tool_anti_truncation = is_tool_anti_truncation_model(model)
-    real_model = get_base_model_from_feature_model(model)
+    model_feature = parse_model_feature(model, backend="geminicli")
+    use_fake_streaming = model_feature.transport == "fake_stream"
+    use_anti_truncation = model_feature.transport == "stream_anti_truncation"
+    real_model = model_feature.request_model
 
     # 更新模型名为真实模型名
     normalized_dict["model"] = real_model
@@ -321,10 +316,7 @@ async def stream_generate_content(
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
-        if use_tool_anti_truncation:
-            from src.converter.tool_anti_truncation import TOOL_ANTI_TRUNCATION_FLAG
-
-            api_request[TOOL_ANTI_TRUNCATION_FLAG] = True
+        apply_model_feature_flags(api_request, model_feature)
 
         # 所有流式请求都使用非 native 模式（SSE格式）并展开 response 包装
         log.debug(f"[GEMINICLI] 使用非native模式，将展开response包装")

@@ -2,8 +2,9 @@
 
 ## Antigravity Gateway
 
-The `工具抗截断/` synthetic-tool transport design and deterministic decoding
-approach are adapted from [Xeltra233/Antigravity-gateway](https://github.com/Xeltra233/Antigravity-gateway).
+The `工具抗截断/` synthetic-tool transport design, deterministic decoding,
+and the experimental image-context mode concept are adapted from
+[Xeltra233/Antigravity-gateway](https://github.com/Xeltra233/Antigravity-gateway).
 
 Copyright (c) 2026 Xeltra233
 

@@ -256,9 +256,10 @@ ghcr.io/su-kaka/gcli2api:latest
 - `gemini-3.1-pro-preview`
 
 ### 🧠 Thinkingモデル
-- `gemini-2.5-pro-high`: Thinkingモード
-- `gemini-2.5-pro-low`: 低Thinkingモード
-- カスタムThinkingバジェット設定に対応
+- OpenAI互換リクエストでは `reasoning_effort` を使用
+- Geminiネイティブリクエストでは `generationConfig.thinkingConfig` を使用
+- Anthropicリクエストでは `thinking` を使用
+- 従来の `-high` / `-low` / `-medium` / `-minimal` サフィックスは引き続き呼び出せますが、Gemini CLI のモデル一覧には展開されません。Antigravity 上流が実際に返すサフィックス付き ID は保持され、明示的なリクエストパラメータが優先されます
 - 思考内容と最終回答の自動分離
 
 ### 🔍 検索拡張モデル
@@ -282,21 +283,28 @@ ghcr.io/su-kaka/gcli2api:latest
 - 比率未指定時はAPIが自動的にアスペクト比を決定
 
 ### 🌊 特殊機能バリアント
-- **疑似ストリーミングモード**: 任意のモデル名に `-假流式` サフィックスを追加
-  - 例: `gemini-2.5-pro-假流式`
+- **疑似ストリーミングモード**: モデル名に `假流式/` プレフィックスを追加
+  - 例: `假流式/gemini-2.5-pro`
   - ストリーミングレスポンスが必要だがサーバーが真のストリーミングに対応していない場合に使用
 - **ストリーミング途切れ防止モード**: モデル名に `流式抗截断/` プレフィックスを追加
   - 例: `流式抗截断/gemini-2.5-pro`
   - レスポンスの途切れを自動検出しリトライして完全な回答を保証
 - **合成ツール途切れ防止モード**: モデル名に `工具抗截断/` プレフィックスを追加
-  - 例: `工具抗截断/gemini-3.7-flash-low`
+  - 例: `工具抗截断/gemini-2.5-flash`
   - 一時的な合成ツールで完全な回答を運び、ストリーミング・非ストリーミングの両方に対応
   - クライアントの実ツール呼び出しを保持し、強制 `tool_choice` では透過的にフォールバック
+- **`[实验性]` 全イメージコンテキスト**: system指示と会話テキストをPNGに描画し、Gemini `inlineData` として上流へ送信
+  - 例: `[实验性] gemini-2.5-flash`
+  - 元画像、ファイル、実ツール呼び出しを保持し、下流は合成ツール途切れ防止を再利用
+- **`[混合实验性]` 現在ターンイメージコンテキスト**: 最後の assistant/model メッセージ以降だけを変換し、履歴はテキストのまま保持
+  - 例: `[混合实验性] gemini-2.5-flash`
+  - 画像トークンとリクエストサイズを抑えるため、通常はこちらを推奨
+- 画像描画失敗時はテキストに透過的にフォールバックし、上流が画像形式を明確に拒否した場合のみ、同じ認証情報でテキストを1回再試行します
 
 ### 🔧 モデル機能の自動検出
-- システムがモデル名内の機能識別子を自動認識
-- 機能モード切替を透過的に処理
-- 機能の組み合わせ使用に対応
+- 共通の `ModelFeature` パーサーがモデル名と従来のサフィックスを1回だけ解析
+- 転送バリアントは排他的で、誤って複数指定した場合は画像コンテキストが優先
+- Thinkingパラメータは転送方式から独立しており、任意の1つのバリアントと併用可能
 
 ---
 
@@ -808,12 +816,15 @@ for part in response.candidates[0].content.parts:
 **Thinkingモード対応**
 ```json
 {
-  "model": "gemini-2.5-pro-high",
+  "model": "gemini-2.5-pro",
+  "reasoning_effort": "high",
   "messages": [
     {"role": "user", "content": "複雑な数学の問題"}
   ]
 }
 ```
+
+Geminiネイティブでは `generationConfig.thinkingConfig`、Anthropicでは `thinking.type` と `thinking.budget_tokens` を使用できます。従来のモデルサフィックスも互換性のため引き続き受け付けます。
 
 レスポンスには分離された思考内容が含まれます:
 ```json
@@ -834,6 +845,17 @@ for part in response.candidates[0].content.parts:
   "model": "流式抗截断/gemini-2.5-pro",
   "messages": [
     {"role": "user", "content": "長い記事を書いてください"}
+  ],
+  "stream": true
+}
+```
+
+**現在ターンイメージコンテキス（推奨実験モード）**
+```json
+{
+  "model": "[混合实验性] gemini-2.5-flash",
+  "messages": [
+    {"role": "user", "content": "このターンを画像コンテキストで処理してください"}
   ],
   "stream": true
 }

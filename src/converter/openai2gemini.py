@@ -17,6 +17,7 @@ from src.converter.thoughtSignature_fix import (
     SKIP_THOUGHT_SIGNATURE_VALIDATOR,
 )
 from src.converter.utils import merge_system_messages
+from src.utils import thinking_config_for_effort
 
 from log import log
 
@@ -1418,6 +1419,20 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
         generation_config["candidateCount"] = openai_request["n"]
     if "seed" in openai_request:
         generation_config["seed"] = openai_request["seed"]
+
+    # OpenAI reasoning controls are explicit request parameters and therefore
+    # must win over any legacy ``-high``/``-low`` model suffix.  A few clients
+    # send the newer nested spelling, so accept it as a compatibility form.
+    reasoning_effort = openai_request.get("reasoning_effort")
+    if reasoning_effort is None:
+        reasoning = openai_request.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning_effort = reasoning.get("effort")
+    if reasoning_effort is not None:
+        explicit_thinking = thinking_config_for_effort(model, reasoning_effort)
+        # Preserve the explicit-parameter boundary even for a future/unknown
+        # effort value, so a legacy model suffix cannot silently override it.
+        generation_config["thinkingConfig"] = explicit_thinking
     
     # 处理 response_format
     if "response_format" in openai_request and openai_request["response_format"]:

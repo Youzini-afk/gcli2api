@@ -6,6 +6,7 @@ Gemini Format Utilities - 统一的 Gemini 格式处理和转换工具
 from typing import Any, Dict, Optional
 
 from log import log
+from src.utils import parse_model_feature
 
 # ==================== Gemini API 配置 ====================
 
@@ -38,23 +39,7 @@ LITE_SAFETY_SETTINGS = [
 
 def get_base_model_name(model_name: str) -> str:
     """移除模型名称中的后缀,返回基础模型名"""
-    # 按照从长到短的顺序排列，避免短后缀先于长后缀被匹配
-    suffixes = [
-        "-maxthinking", "-nothinking",  # 兼容旧模式
-        "-minimal", "-medium", "-search", "-think",  # 中等长度后缀
-        "-high", "-max", "-low"  # 短后缀
-    ]
-    result = model_name
-    changed = True
-    # 持续循环直到没有任何后缀可以移除
-    while changed:
-        changed = False
-        for suffix in suffixes:
-            if result.endswith(suffix):
-                result = result[:-len(suffix)]
-                changed = True
-                # 不使用 break，继续检查是否还有其他后缀
-    return result
+    return parse_model_feature(model_name, backend="geminicli").base_model
 
 
 def get_thinking_settings(model_name: str) -> tuple[Optional[int], Optional[str]]:
@@ -69,15 +54,16 @@ def get_thinking_settings(model_name: str) -> tuple[Optional[int], Optional[str]
     Returns:
         (thinking_budget, thinking_level): 思考预算和思考等级
     """
-    base_model = get_base_model_name(model_name)
+    feature = parse_model_feature(model_name, backend="geminicli")
+    base_model = feature.base_model
 
     # ========== 兼容旧模式 (不返回给用户) ==========
-    if "-nothinking" in model_name:
+    if feature.legacy_thinking == "nothinking":
         # nothinking 模式: 限制思考
         if "flash" in base_model:
             return 0, None
         return 128, None
-    elif "-maxthinking" in model_name:
+    elif feature.legacy_thinking == "maxthinking":
         # maxthinking 模式: 最大思考预算
         budget = 24576 if "flash" in base_model else 32768
         if "gemini-3" in base_model:
@@ -90,17 +76,19 @@ def get_thinking_settings(model_name: str) -> tuple[Optional[int], Optional[str]
 
     # Gemini 3 Preview 系列: 使用 thinkingLevel
     if "gemini-3" in base_model:
-        if "-high" in model_name:
+        if feature.legacy_thinking == "high":
             return None, "high"
-        elif "-medium" in model_name:
+        elif feature.legacy_thinking == "medium":
             # 仅 3-flash-preview 支持 medium
             if "flash" in base_model:
                 return None, "medium"
             # pro 系列不支持 medium，返回 Default
             return None, None
-        elif "-low" in model_name:
+        elif feature.legacy_thinking == "low":
             return None, "low"
-        elif "-minimal" in model_name:
+        elif feature.legacy_thinking == "minimal":
+            # Keep the historical compatibility meaning: default thinking
+            # behavior for Gemini 3 rather than inventing a new level.
             return None, None
         else:
             # Default: 不设置 thinking 配置
@@ -108,20 +96,20 @@ def get_thinking_settings(model_name: str) -> tuple[Optional[int], Optional[str]
 
     # Gemini 2.5 系列: 使用 thinkingBudget
     elif "gemini-2.5" in base_model:
-        if "-max" in model_name:
+        if feature.legacy_thinking == "max":
             # 2.5-flash-max: 24576, 2.5-pro-max: 32768
             budget = 24576 if "flash" in base_model else 32768
             return budget, None
-        elif "-high" in model_name:
+        elif feature.legacy_thinking == "high":
             # 2.5-flash-high: 16000, 2.5-pro-high: 16000
             return 16000, None
-        elif "-medium" in model_name:
+        elif feature.legacy_thinking == "medium":
             # 2.5-flash-medium: 8192, 2.5-pro-medium: 8192
             return 8192, None
-        elif "-low" in model_name:
+        elif feature.legacy_thinking == "low":
             # 2.5-flash-low: 1024, 2.5-pro-low: 1024
             return 1024, None
-        elif "-minimal" in model_name:
+        elif feature.legacy_thinking == "minimal":
             # 2.5-flash-minimal: 0, 2.5-pro-minimal: 128
             budget = 0 if "flash" in base_model else 128
             return budget, None
@@ -135,14 +123,19 @@ def get_thinking_settings(model_name: str) -> tuple[Optional[int], Optional[str]
 
 def is_search_model(model_name: str) -> bool:
     """检查是否为搜索模型"""
-    return "-search" in model_name
+    return parse_model_feature(model_name, backend="geminicli").search_enabled
 
 
 # ==================== 统一的 Gemini 请求后处理 ====================
 
 def is_thinking_model(model_name: str) -> bool:
     """检查是否为思考模型 (包含 -thinking 或 pro)"""
-    return "think" in model_name or "pro" in model_name.lower()
+    feature = parse_model_feature(model_name, backend="geminicli")
+    return bool(
+        feature.legacy_thinking in {"maxthinking", "nothinking", "think"}
+        or "think" in feature.base_model.lower()
+        or "pro" in feature.base_model.lower()
+    )
 
 
 async def normalize_gemini_request(
@@ -178,19 +171,20 @@ async def normalize_gemini_request(
     return_thoughts = await get_return_thoughts_to_frontend()
 
     # ========== 模式特定处理 ==========
-    # 1. 思考设置
-    # 优先使用 get_thinking_settings 获取的思考预算和等级
-    thinking_budget, thinking_level = get_thinking_settings(model)
-
-    # 其次使用传入的思考预算（如果未从模型名称获取）
-    if thinking_budget is None and thinking_level is None:
-        thinking_budget = generation_config.get("thinkingConfig", {}).get("thinkingBudget")
-        thinking_level = generation_config.get("thinkingConfig", {}).get("thinkingLevel")
+    # 1. 思考设置：请求中的 thinkingConfig 是显式契约，优先于模型名后缀。
+    explicit_thinking_config = isinstance(generation_config.get("thinkingConfig"), dict)
+    if explicit_thinking_config:
+        thinking_config = generation_config["thinkingConfig"]
+        thinking_budget = thinking_config.get("thinkingBudget")
+        thinking_level = thinking_config.get("thinkingLevel")
+    else:
+        thinking_budget, thinking_level = get_thinking_settings(model)
+        thinking_config = None
 
     # 假如 is_thinking_model 为真或者思考预算/等级不为空，设置 thinkingConfig
-    if is_thinking_model(model) or thinking_budget is not None or thinking_level is not None:
+    if is_thinking_model(model) or thinking_budget is not None or thinking_level is not None or explicit_thinking_config:
         # 确保 thinkingConfig 存在
-        if "thinkingConfig" not in generation_config:
+        if not explicit_thinking_config:
             generation_config["thinkingConfig"] = {}
 
         thinking_config = generation_config["thinkingConfig"]
@@ -222,7 +216,8 @@ async def normalize_gemini_request(
             else:
                 include_thoughts = return_thoughts
 
-        thinking_config["includeThoughts"] = include_thoughts
+        if "includeThoughts" not in thinking_config:
+            thinking_config["includeThoughts"] = include_thoughts
 
     # 2. 搜索模型添加 Google Search
     if is_search_model(model):
