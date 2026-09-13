@@ -207,6 +207,7 @@ ghcr.io/youzini-afk/gcli2api:latest
 - 全新响应式单页控制台，桌面和移动端共用同一套功能
 - 总览集中显示 Gemini CLI、Antigravity 与网络出口状态
 - OAuth 认证流程管理（支持 GCLI 和 Antigravity 双模式）
+- 完整凭证与 Refresh Token 导出 JSON 自动识别、直接粘贴 RT 导入
 - 凭证文件上传、下载、管理
 - Antigravity 模型额度分组展示与重置时间
 - Mihomo Profile、策略组、节点选择和延迟测试
@@ -774,7 +775,8 @@ for part in response.candidates[0].content.parts:
 - `GET /auth/status/{project_id}` - 检查认证状态
 
 **凭证管理端点**（支持 `mode=geminicli` 或 `mode=antigravity` 参数）
-- `POST /creds/upload` - 批量上传凭证文件（支持 JSON 和 ZIP）
+- `POST /creds/upload` - 批量上传完整凭证或 RT 导出文件（支持 JSON 和 ZIP）
+- `POST /creds/import-refresh-token` - 粘贴单个 RT，刷新验证并自动补齐凭证
 - `GET /creds/status` - 获取凭证状态列表（支持分页和筛选）
 - `GET /creds/detail/{filename}` - 获取单个凭证详情
 - `POST /creds/action` - 单个凭证操作（启用/禁用/删除）

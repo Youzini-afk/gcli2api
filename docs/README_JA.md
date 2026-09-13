@@ -765,7 +765,8 @@ for part in response.candidates[0].content.parts:
 - `GET /auth/status/{project_id}` - 認証ステータスの確認
 
 **クレデンシャル管理エンドポイント**（`mode=geminicli` または `mode=antigravity` パラメータ対応）
-- `POST /creds/upload` - クレデンシャルファイルの一括アップロード（JSONおよびZIP対応）
+- `POST /creds/upload` - 完全なクレデンシャルまたはRefresh Tokenエクスポートを一括アップロード（JSONおよびZIP対応）
+- `POST /creds/import-refresh-token` - 貼り付けたRefresh Tokenを検証してインポート
 - `GET /creds/status` - クレデンシャルステータス一覧の取得（ページネーションとフィルタリング対応）
 - `GET /creds/detail/{filename}` - 単一クレデンシャルの詳細取得
 - `POST /creds/action` - 単一クレデンシャル操作（有効化/無効化/削除）

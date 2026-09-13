@@ -261,6 +261,10 @@ select { appearance: none; padding-right: 34px; background-image: linear-gradien
 
 .connect-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; }
 .connect-card { position: relative; overflow: hidden; padding: 30px; }
+.refresh-token-card { grid-column: 1 / -1; }
+.refresh-token-form { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(0, 1fr)); align-items: end; gap: 14px; }
+.refresh-token-form .button { grid-column: 1 / -1; }
+.refresh-token-field textarea { min-height: 106px; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .connect-card.accent-card { background: linear-gradient(145deg, rgba(184,240,66,.075), rgba(18,22,27,.95) 38%); }
 .connect-card > h2 { margin: 0 0 9px; font-size: 27px; letter-spacing: -.04em; }
 .connect-card > p:not(.eyebrow) { max-width: 520px; margin: 0 0 26px; color: var(--muted); line-height: 1.65; font-size: 12px; }
@@ -433,6 +437,9 @@ select { appearance: none; padding-right: 34px; background-image: linear-gradien
     .bulk-bar { top: 76px; grid-template-columns: 1fr repeat(4, auto); overflow-x: auto; }
     .bulk-bar > span { display: none; }
     .connect-grid { grid-template-columns: 1fr; }
+    .refresh-token-card { grid-column: auto; }
+    .refresh-token-form { grid-template-columns: 1fr 1fr; }
+    .refresh-token-field, .refresh-token-form .button { grid-column: 1 / -1; }
     .quota-summary { grid-template-columns: 1fr; }
     .mihomo-grid { grid-template-columns: 1fr; }
     .profile-panel, .node-panel { min-height: auto; }
@@ -479,6 +486,8 @@ select { appearance: none; padding-right: 34px; background-image: linear-gradien
     .account-meta { min-width: 0; justify-content: flex-start; }
     .quota-models { grid-template-columns: 1fr; }
     .connect-card { padding: 23px; }
+    .refresh-token-form { grid-template-columns: 1fr; }
+    .refresh-token-field, .refresh-token-form .button { grid-column: auto; }
     .mihomo-status { grid-template-columns: 1fr 1fr; }
     .runtime-primary { grid-column: span 2; }
     .runtime-metric { border-bottom: 1px solid var(--line); }

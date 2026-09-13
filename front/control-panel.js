@@ -770,6 +770,52 @@ function updateFileSelection() {
     $('#uploadCredentials').disabled = files.length === 0;
 }
 
+function maskRefreshToken(value, token) {
+    const text = String(value ?? '');
+    return token ? text.replaceAll(token, '[已隐藏]') : text;
+}
+
+function renderRefreshTokenResult(result, token) {
+    const box = $('#refreshTokenResult');
+    const message = maskRefreshToken(result?.message || '导入完成', token);
+    const items = Array.isArray(result?.results) ? result.results : [];
+    const details = items.map((item) => {
+        const filename = maskRefreshToken(item?.filename || '—', token);
+        const status = maskRefreshToken(item?.status || '—', token);
+        const itemMessage = item?.message ? ` · ${maskRefreshToken(item.message, token)}` : '';
+        return `${escapeHtml(filename)} · ${escapeHtml(status)}${escapeHtml(itemMessage)}`;
+    }).join('<br>');
+    box.classList.remove('hidden');
+    box.innerHTML = `<b>${escapeHtml(message)}</b>${details ? `<br>${details}` : ''}`;
+}
+
+async function importRefreshToken() {
+    const button = $('#importRefreshToken');
+    const token = $('#refreshToken').value.trim();
+    if (!token) {
+        toast('请先粘贴 Refresh Token', 'error');
+        $('#refreshToken').focus();
+        return;
+    }
+    const body = { refresh_token: token };
+    const email = $('#refreshTokenEmail').value.trim();
+    const projectId = $('#refreshTokenProjectId').value.trim();
+    if (email) body.email = email;
+    if (projectId) body.project_id = projectId;
+    setBusy(button, true, '导入中…');
+    try {
+        const result = await api(`/creds/import-refresh-token?mode=${state.connectMode}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        renderRefreshTokenResult(result, token);
+        $('#refreshToken').value = '';
+        toast(maskRefreshToken(result.message || 'Refresh Token 导入完成', token));
+    } finally {
+        setBusy(button, false);
+    }
+}
+
 async function uploadCredentials() {
     const button = $('#uploadCredentials');
     const files = [...$('#credentialFiles').files];
@@ -1291,6 +1337,13 @@ function bindEvents() {
     $('#submitCallback').addEventListener('click', () => finishOAuthWithUrl().catch((error) => toast(error.message, 'error', 6500)));
     $('#credentialFiles').addEventListener('change', updateFileSelection);
     $('#uploadCredentials').addEventListener('click', () => uploadCredentials().catch((error) => toast(error.message, 'error', 6500)));
+    $('#refreshTokenForm').addEventListener('submit', (event) => {
+        event.preventDefault();
+        importRefreshToken().catch((error) => {
+            const token = $('#refreshToken').value.trim();
+            toast(maskRefreshToken(error.message, token), 'error', 6500);
+        });
+    });
     for (const eventName of ['dragenter', 'dragover']) $('#uploadDropzone').addEventListener(eventName, (event) => { event.preventDefault(); event.currentTarget.classList.add('dragging'); });
     for (const eventName of ['dragleave', 'drop']) $('#uploadDropzone').addEventListener(eventName, (event) => { event.preventDefault(); event.currentTarget.classList.remove('dragging'); });
     $('#uploadDropzone').addEventListener('drop', (event) => { $('#credentialFiles').files = event.dataTransfer.files; updateFileSelection(); });

@@ -404,5 +404,13 @@ class CredFileBatchActionRequest(BaseModel):
     filenames: List[str]  # 批量操作的文件名列表
 
 
+class ImportRefreshTokenRequest(BaseModel):
+    """Request body for importing one Google OAuth refresh token."""
+
+    refresh_token: str = Field(..., min_length=1)
+    email: Optional[str] = None
+    project_id: Optional[str] = None
+
+
 class ConfigSaveRequest(BaseModel):
     config: dict

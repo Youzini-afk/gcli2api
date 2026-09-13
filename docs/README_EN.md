@@ -765,7 +765,8 @@ for part in response.candidates[0].content.parts:
 - `GET /auth/status/{project_id}` - Check authentication status
 
 **Credential Management Endpoints** (supports `mode=geminicli` or `mode=antigravity` parameter)
-- `POST /creds/upload` - Batch upload credential files (supports JSON and ZIP)
+- `POST /creds/upload` - Batch upload full credentials or refresh-token exports (JSON and ZIP)
+- `POST /creds/import-refresh-token` - Validate and import one pasted refresh token
 - `GET /creds/status` - Get credential status list (supports pagination and filtering)
 - `GET /creds/detail/{filename}` - Get single credential details
 - `POST /creds/action` - Single credential operation (enable/disable/delete)
