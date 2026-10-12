@@ -25,6 +25,7 @@ from src.models import Model, model_to_dict
 from src.utils import ANTIGRAVITY_USER_AGENT
 from src.converter.tool_anti_truncation import (
     TOOL_ANTI_TRUNCATION_FLAG,
+    ToolAntiTruncationContext,
     prepare_tool_anti_truncation_request,
     transform_non_stream_response,
     transform_stream_item,
@@ -33,6 +34,7 @@ from src.converter.image_context import (
     IMAGE_CONTEXT_MODE_FLAG,
     prepare_image_context_request,
 )
+from src.converter.tool_recovery import ToolAntiTruncationRecovery, tool_recovery_enabled
 
 # 导入共同的基础功能
 from src.api.utils import (
@@ -353,6 +355,32 @@ async def stream_request(
     native: bool = False,
     headers: Optional[Dict[str, str]] = None,
 ):
+    if not tool_recovery_enabled(body):
+        async for item in _stream_request_once(body, native=native, headers=headers):
+            yield item
+        return
+    from config import get_anti_truncation_max_attempts
+
+    recovery = ToolAntiTruncationRecovery(body, await get_anti_truncation_max_attempts())
+    stream = recovery.process_stream(
+        lambda payload: _stream_request_once(payload, headers=headers, _recovery=recovery)
+    )
+    try:
+        async for item in stream:
+            if native and isinstance(item, str):
+                yield (item.rstrip("\r\n") + "\n\n").encode("utf-8")
+            else:
+                yield item
+    finally:
+        await stream.aclose()
+
+
+async def _stream_request_once(
+    body: Dict[str, Any],
+    native: bool = False,
+    headers: Optional[Dict[str, str]] = None,
+    _recovery: Optional[ToolAntiTruncationRecovery] = None,
+):
     """
     流式请求函数
 
@@ -371,6 +399,8 @@ async def stream_request(
         fallback_tool_anti_context,
         image_fallback_available,
     ) = await _prepare_request_variants(body)
+    if _recovery is not None:
+        _recovery.context = tool_anti_context
     model_name = body.get("model", "")
 
     # 1. 获取有效凭证
@@ -531,9 +561,26 @@ async def stream_request(
                     last_error_response = chunk  # 记录最后一次错误
 
                     if success_recorded:
+                        if _recovery is not None and isinstance(
+                            _recovery.context, ToolAntiTruncationContext
+                        ):
+                            error_text = chunk.body.decode("utf-8", errors="replace")
+                            cooldown = None
+                            if status_code == 429:
+                                try:
+                                    cooldown = await get_confirmed_429_cooldown(
+                                        current_file, model_name, error_text
+                                    )
+                                except Exception as quota_error:
+                                    log.debug(f"断流后的额度确认失败: {quota_error}")
+                            await record_api_call_error(
+                                credential_manager, current_file, status_code, cooldown,
+                                mode="antigravity", model_name=model_name,
+                                error_message=error_text,
+                            )
                         log.warning(
                             "[ANTIGRAVITY STREAM] 已输出部分响应后收到上游错误，"
-                            "原样返回错误并停止，避免重试造成重复内容"
+                            "返回错误并停止本轮请求"
                         )
                         yield chunk
                         return
@@ -648,6 +695,9 @@ async def stream_request(
                         if use_text_fallback
                         else tool_anti_context
                     )
+                    if _recovery is not None:
+                        _recovery.context = active_tool_context
+                        _recovery.text_fallback |= use_text_fallback
                     yield transform_stream_item(chunk, active_tool_context)
 
             # 流式请求完成，检查结果
@@ -759,6 +809,23 @@ async def non_stream_request(
     body: Dict[str, Any],
     headers: Optional[Dict[str, str]] = None,
 ) -> Response:
+    if await get_antigravity_stream2nostream():
+        return await collect_streaming_response(stream_request(body=body, headers=headers))
+    if not tool_recovery_enabled(body):
+        return await _non_stream_request_once(body, headers=headers)
+    from config import get_anti_truncation_max_attempts
+
+    recovery = ToolAntiTruncationRecovery(body, await get_anti_truncation_max_attempts())
+    return await recovery.process_non_stream(
+        lambda payload: _non_stream_request_once(payload, headers=headers, _recovery=recovery)
+    )
+
+
+async def _non_stream_request_once(
+    body: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    _recovery: Optional[ToolAntiTruncationRecovery] = None,
+) -> Response:
     """
     非流式请求函数
 
@@ -769,18 +836,6 @@ async def non_stream_request(
     Returns:
         Response对象
     """
-    # 检查是否启用流式收集模式
-    if await get_antigravity_stream2nostream():
-        log.debug("[ANTIGRAVITY] 使用流式收集模式实现非流式请求")
-
-        # 调用stream_request获取流
-        stream = stream_request(body=body, native=False, headers=headers)
-
-        # 收集流式响应
-        # stream_request是一个异步生成器，可能yield Response（错误）或流数据
-        # collect_streaming_response会自动处理这两种情况
-        return await collect_streaming_response(stream)
-
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
 
@@ -791,6 +846,8 @@ async def non_stream_request(
         fallback_tool_anti_context,
         image_fallback_available,
     ) = await _prepare_request_variants(body)
+    if _recovery is not None:
+        _recovery.context = tool_anti_context
     model_name = body.get("model", "")
 
     # 1. 获取有效凭证
@@ -958,6 +1015,9 @@ async def non_stream_request(
                         if use_text_fallback
                         else tool_anti_context
                     )
+                    if _recovery is not None:
+                        _recovery.context = active_tool_context
+                        _recovery.text_fallback |= use_text_fallback
                     if active_tool_context is not None:
                         response_headers.pop("content-length", None)
                         response_headers.pop("content-encoding", None)

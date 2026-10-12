@@ -31,8 +31,9 @@ class ToolAntiTruncationContext:
     stream_raw_buffers: dict[str, str] = field(default_factory=dict)
     stream_contents: dict[str, str] = field(default_factory=dict)
     stream_emitted: dict[str, int] = field(default_factory=dict)
-    stream_synthetic_call_ids: set[str] = field(default_factory=set)
+    stream_synthetic_call_ids: set[tuple[int, str]] = field(default_factory=set)
     stream_synthetic_choices: set[int] = field(default_factory=set)
+    stream_complete_synthetic_choices: set[int] = field(default_factory=set)
     stream_real_tool_choices: set[int] = field(default_factory=set)
 
 
@@ -339,14 +340,17 @@ def transform_gemini_response(
                 name = str(function_call.get("name", ""))
                 call_id = str(function_call.get("id", ""))
                 if name == context.tool_name or (
-                    streaming and call_id in context.stream_synthetic_call_ids
+                    streaming and (choice_index, call_id) in context.stream_synthetic_call_ids
                 ):
                     has_synthetic = True
+                    context.stream_synthetic_choices.add(choice_index)
                     if streaming:
-                        context.stream_synthetic_choices.add(choice_index)
                         if call_id:
-                            context.stream_synthetic_call_ids.add(call_id)
-                    call_key = str(call_id or f"{choice_index}:{part_index}:{context.tool_name}")
+                            context.stream_synthetic_call_ids.add((choice_index, call_id))
+                    call_key = (
+                        f"{choice_index}:{call_id}" if call_id
+                        else f"{choice_index}:{part_index}:{context.tool_name}"
+                    )
                     arguments = function_call.get("args", function_call.get("arguments"))
                     decoded = (
                         _stream_content(context, call_key, arguments)
@@ -355,6 +359,19 @@ def transform_gemini_response(
                     )
                     if decoded:
                         synthetic_deltas.append(decoded)
+                    complete_arguments = arguments
+                    if isinstance(arguments, str):
+                        raw = context.stream_raw_buffers.get(call_key, arguments)
+                        try:
+                            complete_arguments = json.loads(raw)
+                        except (ValueError, TypeError):
+                            complete_arguments = None
+                    if isinstance(complete_arguments, dict) and any(
+                        isinstance(complete_arguments.get(key), str) for key in CONTENT_KEYS
+                    ):
+                        context.stream_complete_synthetic_choices.add(choice_index)
+                    else:
+                        context.stream_complete_synthetic_choices.discard(choice_index)
                     continue
                 real_function_calls += 1
                 if streaming:

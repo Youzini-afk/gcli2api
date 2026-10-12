@@ -35,6 +35,7 @@ from src.api.utils import (
 from src.utils import get_geminicli_user_agent
 from src.converter.tool_anti_truncation import (
     TOOL_ANTI_TRUNCATION_FLAG,
+    ToolAntiTruncationContext,
     prepare_tool_anti_truncation_request,
     transform_non_stream_response,
     transform_stream_item,
@@ -43,6 +44,7 @@ from src.converter.image_context import (
     IMAGE_CONTEXT_MODE_FLAG,
     prepare_image_context_request,
 )
+from src.converter.tool_recovery import ToolAntiTruncationRecovery, tool_recovery_enabled
 
 # ==================== 全局凭证管理器 ====================
 
@@ -213,6 +215,32 @@ async def stream_request(
     native: bool = False,
     headers: Optional[Dict[str, str]] = None,
 ):
+    if not tool_recovery_enabled(body):
+        async for item in _stream_request_once(body, native=native, headers=headers):
+            yield item
+        return
+    from config import get_anti_truncation_max_attempts
+
+    recovery = ToolAntiTruncationRecovery(body, await get_anti_truncation_max_attempts())
+    stream = recovery.process_stream(
+        lambda payload: _stream_request_once(payload, headers=headers, _recovery=recovery)
+    )
+    try:
+        async for item in stream:
+            if native and isinstance(item, str):
+                yield (item.rstrip("\r\n") + "\n\n").encode("utf-8")
+            else:
+                yield item
+    finally:
+        await stream.aclose()
+
+
+async def _stream_request_once(
+    body: Dict[str, Any],
+    native: bool = False,
+    headers: Optional[Dict[str, str]] = None,
+    _recovery: Optional[ToolAntiTruncationRecovery] = None,
+):
     """
     流式请求函数
 
@@ -231,6 +259,8 @@ async def stream_request(
         fallback_tool_anti_context,
         image_fallback_available,
     ) = await _prepare_request_variants(body)
+    if _recovery is not None:
+        _recovery.context = tool_anti_context
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -392,9 +422,23 @@ async def stream_request(
                     last_error_response = chunk  # 记录最后一次错误
 
                     if success_recorded:
+                        if _recovery is not None and isinstance(
+                            _recovery.context, ToolAntiTruncationContext
+                        ):
+                            error_text = chunk.body.decode("utf-8", errors="replace")
+                            cooldown = (
+                                await parse_and_log_cooldown(error_text, mode="geminicli")
+                                if status_code in (429, 503)
+                                else None
+                            )
+                            await record_api_call_error(
+                                credential_manager, current_file, status_code, cooldown,
+                                mode="geminicli", model_name=model_name,
+                                error_message=error_text,
+                            )
                         log.warning(
                             "[GEMINICLI STREAM] 已输出部分响应后收到上游错误，"
-                            "原样返回错误并停止，避免重试造成重复内容"
+                            "返回错误并停止本轮请求"
                         )
                         yield chunk
                         return
@@ -509,6 +553,9 @@ async def stream_request(
                         if use_text_fallback
                         else tool_anti_context
                     )
+                    if _recovery is not None:
+                        _recovery.context = active_tool_context
+                        _recovery.text_fallback |= use_text_fallback
                     yield transform_stream_item(chunk, active_tool_context)
 
             # 流式请求完成，检查结果
@@ -603,6 +650,21 @@ async def non_stream_request(
     body: Dict[str, Any],
     headers: Optional[Dict[str, str]] = None,
 ) -> Response:
+    if not tool_recovery_enabled(body):
+        return await _non_stream_request_once(body, headers=headers)
+    from config import get_anti_truncation_max_attempts
+
+    recovery = ToolAntiTruncationRecovery(body, await get_anti_truncation_max_attempts())
+    return await recovery.process_non_stream(
+        lambda payload: _non_stream_request_once(payload, headers=headers, _recovery=recovery)
+    )
+
+
+async def _non_stream_request_once(
+    body: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    _recovery: Optional[ToolAntiTruncationRecovery] = None,
+) -> Response:
     """
     非流式请求函数
 
@@ -621,6 +683,8 @@ async def non_stream_request(
         fallback_tool_anti_context,
         image_fallback_available,
     ) = await _prepare_request_variants(body)
+    if _recovery is not None:
+        _recovery.context = tool_anti_context
     # 获取有效凭证
     model_name = body.get("model", "")
 
@@ -757,12 +821,16 @@ async def non_stream_request(
                 response_headers.pop('content-encoding', None)
                 response_headers.pop('content-length', None)
 
+                active_tool_context = (
+                    fallback_tool_anti_context if use_text_fallback else tool_anti_context
+                )
+                if _recovery is not None:
+                    _recovery.context = active_tool_context
+                    _recovery.text_fallback |= use_text_fallback
                 return Response(
                     content=transform_non_stream_response(
                         response.content,
-                        fallback_tool_anti_context
-                        if use_text_fallback
-                        else tool_anti_context,
+                        active_tool_context,
                     ),
                     status_code=200,
                     headers=response_headers

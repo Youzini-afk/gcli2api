@@ -292,11 +292,13 @@ All models have 1M context window capacity. Each credential file provides 1000 r
 - **Synthetic Tool Anti-truncation Mode**: Add `工具抗截断/` prefix to the model name
   - Example: `工具抗截断/gemini-2.5-flash`
   - The upstream `抗截断/` prefix is an alias for this mode; `流式抗截断/` retains its original continuation behavior
-  - Carries the complete answer through a one-time synthetic tool in streaming or non-streaming mode
+  - Carries the answer through a synthetic tool in streaming or non-streaming mode; truncated or interrupted answers resume with the emitted text as history
+  - Plain text ending with `STOP` completes immediately; genuine tools are handed back to the client, and a repeated full answer prefix is suppressed during continuation
+  - Shares the maximum anti-truncation attempts setting (default 3, including the initial request); unsuccessful recovery returns an explicit error
   - Preserves genuine client tool calls and transparently falls back for forced `tool_choice`
 - **`[实验性]` Full Image Context Mode**: Renders system instructions and conversation text as PNG and sends it upstream as Gemini `inlineData`
   - Example: `[实验性] gemini-2.5-flash`
-  - Preserves native images, files and genuine tool calls; downstream output automatically reuses synthetic-tool anti-truncation
+  - Preserves native images, files and genuine tool calls; downstream output reuses synthetic-tool anti-truncation and its continuation/stream recovery
 - **`[混合实验性]` Current-turn Image Context Mode**: Converts only content after the latest assistant/model message and keeps history as text
   - Example: `[混合实验性] gemini-2.5-flash`
   - Prefer this mode when possible because it uses fewer image tokens and a smaller request body

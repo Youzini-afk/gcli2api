@@ -868,7 +868,7 @@ const settingSections = [
             ['retry_429_enabled', '启用 429 重试', 'boolean', '遇到限流时按配置重试。'],
             ['retry_429_max_retries', '429 最大重试次数', 'number'],
             ['retry_429_interval', '429 重试间隔（秒）', 'number-step'],
-            ['anti_truncation_max_attempts', '抗截断最大尝试次数', 'number'],
+            ['anti_truncation_max_attempts', '抗截断最大尝试次数', 'number', '流式抗截断和工具抗截断共用，包含首次请求；两种实验模式也使用工具恢复。'],
             ['auto_ban_enabled', '启用自动停用', 'boolean', '凭证返回指定错误码时自动停用。'],
             ['auto_ban_error_codes', '自动停用错误码', 'list'],
         ],
