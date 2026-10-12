@@ -3,6 +3,7 @@ Anti-Truncation Module - Ensures complete streaming output
 保持一个流式请求内完整输出的反截断模块
 """
 
+import copy
 import io
 import json
 import re
@@ -88,7 +89,7 @@ def apply_regex_replacements_to_payload(payload: Dict[str, Any]) -> Dict[str, An
     if not REGEX_REPLACEMENTS:
         return payload
 
-    modified_payload = payload.copy()
+    modified_payload = copy.deepcopy(payload)
     request_data = modified_payload.get("request", {})
 
     # 处理contents中的文本
@@ -192,7 +193,7 @@ class AntiTruncationStreamProcessor:
         enable_prefill_mode: bool = False,
     ):
         self.original_request_func = original_request_func
-        self.base_payload = payload.copy()
+        self.base_payload = copy.deepcopy(payload)
         self.max_attempts = max_attempts
         self.enable_prefill_mode = enable_prefill_mode
         # 使用 StringIO 避免字符串拼接的内存问题
@@ -391,7 +392,7 @@ class AntiTruncationStreamProcessor:
             return self.base_payload
 
         # 后续请求，添加续传指令
-        continuation_payload = self.base_payload.copy()
+        continuation_payload = copy.deepcopy(self.base_payload)
         request_data = continuation_payload.get("request", {})
 
         # 获取原始对话内容

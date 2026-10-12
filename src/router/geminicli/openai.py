@@ -106,7 +106,13 @@ async def chat_completions(
 
     # 规范化 Gemini 请求 (使用 geminicli 模式)
     from src.converter.gemini_fix import normalize_gemini_request
-    gemini_dict = await normalize_gemini_request(gemini_dict, mode="geminicli")
+    gemini_dict = await normalize_gemini_request(
+        gemini_dict,
+        mode="geminicli",
+        preserve_trailing_model=model_feature.transport in {
+            "tool_anti_truncation", "image_all", "image_current_turn"
+        },
+    )
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
@@ -266,6 +272,7 @@ async def chat_completions(
         # 转换为 OpenAI 格式
         import uuid
         response_id = str(uuid.uuid4())
+        tool_call_indices = {}
 
         # 直接迭代 process_stream() 生成器，并转换为 OpenAI 格式
         async for chunk in processor.process_stream():
@@ -292,7 +299,8 @@ async def chat_completions(
                     openai_chunk_str = convert_gemini_to_openai_stream(
                         chunk_str,
                         real_model,
-                        response_id
+                        response_id,
+                        tool_call_indices=tool_call_indices,
                     )
 
                     if openai_chunk_str:
@@ -323,6 +331,7 @@ async def chat_completions(
             return
 
         response_id = str(uuid.uuid4())
+        tool_call_indices = {}
 
         # yield所有数据,处理可能的错误Response
         async for chunk in prepend_async_item(first_chunk, stream_gen):
@@ -365,7 +374,8 @@ async def chat_completions(
                         openai_chunk_str = convert_gemini_to_openai_stream(
                             chunk_str,
                             real_model,
-                            response_id
+                            response_id,
+                            tool_call_indices=tool_call_indices,
                         )
 
                         if openai_chunk_str:

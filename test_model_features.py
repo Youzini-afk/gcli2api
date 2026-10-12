@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 
 from src.converter.antigravity_fix import normalize_antigravity_request
@@ -37,6 +39,34 @@ def test_compatibility_wrapper_only_removes_transport_marker():
         get_base_model_from_feature_model("流式抗截断/gemini-3-pro-high-search")
         == "gemini-3-pro-high-search"
     )
+
+
+def test_upstream_anti_prefix_uses_tool_mode_without_replacing_stream_continuation():
+    assert parse_model_feature("抗截断/gemini-3.8-flash").transport == "tool_anti_truncation"
+    assert parse_model_feature("流式抗截断/gemini-3.8-flash").transport == "stream_anti_truncation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "client_config", "expected"),
+    [
+        ("gemini-2.5-flash-high", {"thinkingLevel": "low"}, {"thinkingBudget": 1024}),
+        ("gemini-3.8-flash-high", {"thinkingBudget": 1024}, {"thinkingLevel": "low"}),
+        ("gemini-3.8-flash-high", {"thinkingLevel": "minimal"}, {"thinkingLevel": "low"}),
+    ],
+)
+async def test_model_profiles_translate_explicit_thinking_before_legacy_suffixes(
+    model,
+    client_config,
+    expected,
+):
+    original = deepcopy(client_config)
+    result = await normalize_gemini_request(
+        {"model": model, "generationConfig": {"thinkingConfig": client_config}}
+    )
+    actual = result["generationConfig"]["thinkingConfig"]
+    assert {key: value for key, value in actual.items() if key != "includeThoughts"} == expected
+    assert client_config == original
 
 
 @pytest.mark.asyncio
@@ -116,6 +146,12 @@ async def test_antigravity_preserves_real_high_low_ids_and_explicit_effort():
     )
     assert real_id["model"] == "gemini-3-pro-high"
 
+    medium_id = await normalize_antigravity_request(
+        {"model": "gemini-3.8-flash-medium", "generationConfig": {}}
+    )
+    assert medium_id["model"] == "gemini-3.8-flash-medium"
+    assert "thinkingLevel" not in medium_id["generationConfig"]["thinkingConfig"]
+
     explicit = await normalize_antigravity_request(
         {
             "model": "gemini-3-pro-preview",
@@ -145,7 +181,8 @@ async def test_antigravity_known_pro_high_alias_keeps_reasoning_output_setting()
 def test_geminicli_model_list_does_not_expand_thinking_or_search():
     models = get_available_models("gemini")
 
-    assert len(models) == 36
+    assert "gemini-3.8-flash" in models
+    assert len(models) == len(set(models))
     assert all("-search" not in model for model in models)
     assert all(
         not model.endswith(("-high", "-medium", "-low", "-minimal", "-max")) for model in models

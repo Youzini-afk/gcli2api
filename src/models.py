@@ -26,8 +26,8 @@ class ModelFeature:
 
     ``request_model`` 仅移除传输/实验标记，供路由传入转换器；
     ``base_model`` 还会去除可识别的 legacy thinking/search 后缀。
-    Antigravity 解析器会对可能是真实上游 ID 的 ``-high``/``-low``
-    后缀采取保守策略并保留它们。
+    Antigravity 保留可能是真实上游 ID 的 ``-high``/``-low``，
+    Gemini 3 的 ``-medium`` 路由也原样保留。
     """
 
     original_model: str

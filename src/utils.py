@@ -14,26 +14,20 @@ PANEL_AUTH_FAILURE_HEADER = "X-Panel-Auth-Failed"
 
 # ====================== OAuth Configuration ======================
 
-_GEMINICLI_VERSION = "0.55.1"
-_GEMINICLI_PLATFORM = "win32"
-_GEMINICLI_ARCH = "x64"
-_GEMINICLI_SURFACE = "cloud-shell"
-
-
 def get_geminicli_user_agent(model: str = "") -> str:
-    """生成动态 User-Agent: GeminiCLI/{version}/{model} ({platform}; {arch}; {surface})"""
+    """生成上游 Gemini CLI 的浏览器兼容 User-Agent。"""
     if model:
-        return f"GeminiCLI/{_GEMINICLI_VERSION}/{model} ({_GEMINICLI_PLATFORM}; {_GEMINICLI_ARCH}; {_GEMINICLI_SURFACE})"
-    return f"GeminiCLI/{_GEMINICLI_VERSION} ({_GEMINICLI_PLATFORM}; {_GEMINICLI_ARCH}; {_GEMINICLI_SURFACE})"
+        return f"Mozilla/5.0 (compatible; Google-Gemini-CLI/1.0; +https://github.com/google-gemini/gemini-cli) {model}"
+    return "Mozilla/5.0 (compatible; Google-Gemini-CLI/1.0; +https://github.com/google-gemini/gemini-cli)"
 
 
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
 # Antigravity CLI 客户端仿真常量
-ANTIGRAVITY_CLI_VERSION = "1.1.12"
-ANTIGRAVITY_CLI_PLATFORM = "windows/amd64"
-ANTIGRAVITY_USER_AGENT = f"antigravity/cli/{ANTIGRAVITY_CLI_VERSION} {ANTIGRAVITY_CLI_PLATFORM}"
+ANTIGRAVITY_CLI_VERSION = "2.22.0"
+ANTIGRAVITY_CLI_PLATFORM = "darwin/arm64"
+ANTIGRAVITY_USER_AGENT = f"antigravity/hub/{ANTIGRAVITY_CLI_VERSION} {ANTIGRAVITY_CLI_PLATFORM}"
 
 # OAuth Configuration - 标准模式
 CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
@@ -69,6 +63,7 @@ BASE_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash",
+    "gemini-3.8-flash",
 ]
 
 
@@ -78,6 +73,7 @@ _MODEL_TRANSPORT_PREFIXES = (
     ("假流式/", "fake_stream"),
     ("流式抗截断/", "stream_anti_truncation"),
     ("工具抗截断/", "tool_anti_truncation"),
+    ("抗截断/", "tool_anti_truncation"),
 )
 
 # These are client-facing compatibility suffixes.  They are intentionally
@@ -116,8 +112,8 @@ def parse_model_feature(model_name: str, *, backend: str | None = None) -> Model
     """Parse transport, experiment and legacy model-name features once.
 
     ``backend="antigravity"`` is deliberately conservative: ``-high`` and
-    ``-low`` can be part of a real Antigravity upstream model ID, so those two
-    suffixes are not removed there.  Other known compatibility suffixes remain
+    ``-low`` (also ``-medium`` for Gemini 3) can be real upstream model IDs,
+    so those suffixes are not removed there. Other compatibility suffixes remain
     available for old callers.  GeminiCLI treats all known thinking suffixes
     as compatibility metadata.
     """
@@ -155,7 +151,10 @@ def parse_model_feature(model_name: str, *, backend: str | None = None) -> Model
             continue
         # Antigravity's high/low IDs are ambiguous.  Only the unambiguous
         # compatibility suffixes are interpreted on that backend.
-        if backend == "antigravity" and suffix in {"high", "low"}:
+        if backend == "antigravity" and (
+            suffix in {"high", "low"}
+            or (suffix == "medium" and lowered.startswith("gemini-3"))
+        ):
             break
         remainder = remainder[: -len(token)].rstrip()
         legacy_thinking = suffix
@@ -280,7 +279,7 @@ def get_available_models(router_type: str = "openai") -> List[str]:
         # 假流式模型 (前缀格式)
         models.append(f"假流式/{base_model}")
 
-        # 流式抗截断模型 (仅在流式传输时有效，前缀格式)
+        # 流式续写抗截断（保留独立前缀）
         models.append(f"流式抗截断/{base_model}")
 
         # 合成工具抗截断模型（支持流式与非流式）

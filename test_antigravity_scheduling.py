@@ -62,6 +62,22 @@ def test_retry_delay_is_used_when_reset_timestamp_is_missing(monkeypatch):
     assert api_utils.parse_quota_reset_timestamp(error, mode="antigravity") == 4723.5
 
 
+def test_message_only_quota_reset_delay_supports_spaces_and_fractional_seconds(monkeypatch):
+    monkeypatch.setattr(api_utils.time, "time", lambda: 1_000.0)
+    error = {"error": {"message": "Your quota will reset after 1h 2m 3.5s."}}
+    assert api_utils.parse_quota_reset_timestamp(error, mode="geminicli") == 4723.5
+
+
+def test_antigravity_generic_429_does_not_invent_a_four_hour_reset():
+    error = {
+        "error": {
+            "status": "RESOURCE_EXHAUSTED",
+            "message": "Resource has been exhausted (e.g. check quota).",
+        }
+    }
+    assert api_utils.parse_quota_reset_timestamp(error, mode="antigravity") is None
+
+
 @pytest.mark.parametrize(
     ("model_name", "expected"),
     [

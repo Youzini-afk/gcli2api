@@ -9,6 +9,7 @@ import src.api.antigravity as antigravity_api
 import src.api.geminicli as geminicli_api
 import src.quota_refresh as quota_refresh_module
 import src.router.antigravity.model_list as antigravity_model_list
+from src.converter.anti_truncation import AntiTruncationStreamProcessor, apply_anti_truncation
 from src.models import OpenAIChatCompletionRequest
 from src.router.antigravity.openai import chat_completions as antigravity_openai_chat
 from src.router.geminicli.openai import chat_completions as geminicli_openai_chat
@@ -29,6 +30,31 @@ from src.utils import (
     is_anti_truncation_model,
     is_tool_anti_truncation_model,
 )
+
+
+def test_stream_continuation_does_not_mutate_or_accumulate_into_original_history():
+    original = {
+        "model": "gemini-3.8-flash",
+        "request": {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
+    }
+    saved = copy.deepcopy(original)
+    prepared = apply_anti_truncation(original)
+    assert "tools" not in prepared["request"]
+    assert "[done]" in prepared["request"]["systemInstruction"]["parts"][-1]["text"]
+
+    processor = AntiTruncationStreamProcessor(lambda _: None, prepared)
+    processor._append_content("first")
+    processor.current_attempt = 2
+    second = processor._build_current_payload()
+    processor._append_content("second")
+    processor.current_attempt = 3
+    third = processor._build_current_payload()
+
+    assert len(second["request"]["contents"]) == len(third["request"]["contents"]) == 3
+    assert second["request"]["contents"][-2]["parts"][0]["text"] == "first"
+    assert third["request"]["contents"][-2]["parts"][0]["text"] == "firstsecond"
+    assert processor.base_payload == prepared
+    assert original == saved
 
 
 def test_tool_prefix_is_distinct_and_old_prefix_is_unchanged():

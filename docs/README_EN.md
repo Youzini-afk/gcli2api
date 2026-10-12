@@ -291,6 +291,7 @@ All models have 1M context window capacity. Each credential file provides 1000 r
   - Automatically detects response truncation and retries to ensure complete answers
 - **Synthetic Tool Anti-truncation Mode**: Add `工具抗截断/` prefix to the model name
   - Example: `工具抗截断/gemini-2.5-flash`
+  - The upstream `抗截断/` prefix is an alias for this mode; `流式抗截断/` retains its original continuation behavior
   - Carries the complete answer through a one-time synthetic tool in streaming or non-streaming mode
   - Preserves genuine client tool calls and transparently falls back for forced `tool_choice`
 - **`[实验性]` Full Image Context Mode**: Renders system instructions and conversation text as PNG and sends it upstream as Gemini `inlineData`

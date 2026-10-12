@@ -96,7 +96,13 @@ async def generate_content(
 
     # 规范化 Gemini 请求 (使用 geminicli 模式)
     from src.converter.gemini_fix import normalize_gemini_request
-    normalized_dict = await normalize_gemini_request(normalized_dict, mode="geminicli")
+    normalized_dict = await normalize_gemini_request(
+        normalized_dict,
+        mode="geminicli",
+        preserve_trailing_model=model_feature.transport in {
+            "tool_anti_truncation", "image_all", "image_current_turn"
+        },
+    )
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
@@ -158,7 +164,12 @@ async def stream_generate_content(
         from src.converter.gemini_fix import normalize_gemini_request
         from src.api.geminicli import non_stream_request
 
-        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="geminicli")
+        normalized_req = await normalize_gemini_request(
+            normalized_dict.copy(), mode="geminicli",
+            preserve_trailing_model=model_feature.transport in {
+                "tool_anti_truncation", "image_all", "image_current_turn"
+            },
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
@@ -223,7 +234,12 @@ async def stream_generate_content(
         from fastapi import Response
 
         # 先进行基础标准化
-        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="geminicli")
+        normalized_req = await normalize_gemini_request(
+            normalized_dict.copy(), mode="geminicli",
+            preserve_trailing_model=model_feature.transport in {
+                "tool_anti_truncation", "image_all", "image_current_turn"
+            },
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
@@ -309,7 +325,12 @@ async def stream_generate_content(
         from src.api.geminicli import stream_request
         from fastapi import Response
 
-        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="geminicli")
+        normalized_req = await normalize_gemini_request(
+            normalized_dict.copy(), mode="geminicli",
+            preserve_trailing_model=model_feature.transport in {
+                "tool_anti_truncation", "image_all", "image_current_turn"
+            },
+        )
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {

@@ -51,14 +51,25 @@ async def test_all_public_routes_forward_mixed_image_context_as_one_private_flag
     model = "[混合实验性] gemini-2.5-flash"
     openai_request = OpenAIChatCompletionRequest(
         model=model,
-        messages=[{"role": "user", "content": "hello"}],
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "history"},
+        ],
     )
     anthropic_request = ClaudeRequest(
         model=model,
         max_tokens=128,
-        messages=[{"role": "user", "content": "hello"}],
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "history"},
+        ],
     )
-    gemini_request = GeminiRequest(contents=[{"role": "user", "parts": [{"text": "hello"}]}])
+    gemini_request = GeminiRequest(
+        contents=[
+            {"role": "user", "parts": [{"text": "hello"}]},
+            {"role": "model", "parts": [{"text": "history"}]},
+        ]
+    )
 
     await antigravity_openai(openai_request, token="test")
     await antigravity_anthropic(anthropic_request, _token="test")
@@ -71,6 +82,7 @@ async def test_all_public_routes_forward_mixed_image_context_as_one_private_flag
     for body in captured:
         assert body["model"] == "gemini-2.5-flash"
         assert body[IMAGE_CONTEXT_MODE_FLAG] == ImageContextMode.CURRENT_TURN.value
+        assert body["request"]["contents"][-1]["role"] == "model"
 
 
 @pytest.mark.asyncio

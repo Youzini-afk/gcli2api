@@ -523,7 +523,7 @@ def _parse_retry_duration_seconds(value: Any) -> Optional[float]:
         return max(0.0, float(value))
     if not isinstance(value, str):
         return None
-    match = _DURATION_PATTERN.fullmatch(value)
+    match = _DURATION_PATTERN.fullmatch(re.sub(r"\s+", "", value))
     if not match or not any(match.groupdict().values()):
         return None
     multipliers = {
@@ -619,9 +619,21 @@ def parse_quota_reset_timestamp(error_response: dict, mode: str = "geminicli") -
             # selected again before either quota or retry window has recovered.
             return max(candidates)
 
+        # Some upstreams provide only a human-readable reset delay.
+        reset_match = re.search(
+            r"Your quota will reset after\s+((?:\d+(?:\.\d+)?\s*[dhms]\s*)+)",
+            str(error_obj.get("message", "")),
+            re.IGNORECASE,
+        )
+        if reset_match:
+            delay = _parse_retry_duration_seconds(reset_match.group(1))
+            if delay:
+                return now + delay
+
         # 如果是 RESOURCE_EXHAUSTED 错误且消息完全匹配，设置默认4小时冷却时间
         if (
-            error_obj.get("status") == "RESOURCE_EXHAUSTED"
+            mode.lower() != "antigravity"
+            and error_obj.get("status") == "RESOURCE_EXHAUSTED"
             and error_obj.get("message") == "Resource has been exhausted (e.g. check quota)."
         ):
             cooldown_until = time.time() + RESOURCE_EXHAUSTED_COOLDOWN_HOURS * 3600
